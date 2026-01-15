@@ -44,288 +44,98 @@ https://raw.githubusercontent.com/alvinunreal/oh-my-opencode-slim/refs/heads/mas
 <details>
 <summary>Instructions for LLM Agents (click to expand)</summary>
 
-If you're an LLM Agent helping set up oh-my-opencode-slim, follow these steps **exactly in order**. Ask questions **one at a time** and wait for the user's response before proceeding.
+If you're an LLM Agent helping set up oh-my-opencode-slim, follow these steps.
 
 ---
 
 #### Step 1: Check OpenCode Installation
 
-First, verify OpenCode is installed:
-
 ```bash
-if command -v opencode &> /dev/null; then
-    echo "OpenCode $(opencode --version) is installed"
-else
-    echo "OpenCode is not installed. Please install it first."
-    echo "Ref: https://opencode.ai/docs"
-fi
+opencode --version
 ```
 
-If OpenCode is not installed, **STOP** and ask the user to install it first.
+If not installed, direct the user to https://opencode.ai/docs first.
 
 ---
 
-#### Step 2: Ask About Provider Access (ONE QUESTION AT A TIME)
+#### Step 2: Ask About Provider Access
 
-**IMPORTANT**: Ask these questions **one by one**. Wait for the user's answer before asking the next question. Store their answers to determine the final configuration.
+Ask these questions **one at a time**, waiting for responses:
 
-**Question 1** (ask first, wait for response):
-> "Do you have an **Antigravity** subscription? (yes/no)"
-> 
-> *Antigravity provides access to Claude and Gemini models via the `google/` prefix.*
-
-**Question 2** (ask after Question 1 is answered):
-> "Do you have access to **OpenAI** API? (yes/no)"
-> 
-> *This enables `openai/` models like GPT-5.2 Codex.*
-
-**Question 3** (ask after Question 2 is answered):
-> "Do you have access to **Cerebras** API? (yes/no)"
-> 
-> *This enables `cerebras/` models for fast exploration tasks.*
+1. "Do you have an **Antigravity** subscription?" *(Provides Claude + Gemini via `google/` prefix)*
+2. "Do you have access to **OpenAI** API?" *(Enables `openai/` models)*
+3. "Do you have access to **Cerebras** API?" *(Enables `cerebras/` for fast exploration)*
 
 ---
 
 #### Step 3: Run the Installer
 
-Based on the user's answers, run the installer with appropriate flags:
+Based on answers, run:
 
 ```bash
 bunx oh-my-opencode-slim install --no-tui --antigravity=<yes|no> --openai=<yes|no> --cerebras=<yes|no>
 ```
 
 **Examples:**
-- User has Antigravity + OpenAI: `bunx oh-my-opencode-slim install --no-tui --antigravity=yes --openai=yes --cerebras=no`
-- User has only OpenAI: `bunx oh-my-opencode-slim install --no-tui --antigravity=no --openai=yes --cerebras=no`
-- User has Cerebras only: `bunx oh-my-opencode-slim install --no-tui --antigravity=no --openai=no --cerebras=yes`
-
----
-
-#### Alternative: Manual Configuration
-
-If the installer doesn't work, create the configuration files manually:
-
-##### 3a. Create `~/.config/opencode/opencode.json`
-
-**If user has Antigravity (regardless of other providers):**
-```json
-{
-  "plugin": [
-    "oh-my-opencode-slim",
-    "opencode-antigravity-auth@latest"
-  ],
-  "provider": {
-    "google": {
-      "name": "Google",
-      "models": {
-        "gemini-3-pro-high": {
-          "name": "Gemini 3 Pro High",
-          "limit": { "context": 1048576, "output": 65535 }
-        },
-        "gemini-3-flash": {
-          "name": "Gemini 3 Flash",
-          "limit": { "context": 1048576, "output": 65536 }
-        },
-        "claude-opus-4-5-thinking": {
-          "name": "Claude Opus 4.5 Thinking",
-          "limit": { "context": 200000, "output": 32000 }
-        }
-      }
-    }
-  }
-}
-```
-
-**If user does NOT have Antigravity:**
-```json
-{
-  "plugin": [
-    "oh-my-opencode-slim"
-  ]
-}
-```
-
-##### 3b. Create `~/.config/opencode/oh-my-opencode-slim.json`
-
-Select the appropriate configuration based on the user's answers:
-
-**Scenario A: Antigravity ONLY (no OpenAI, no Cerebras)**
-```json
-{
-  "agents": {
-    "orchestrator": { "model": "google/claude-opus-4-5-thinking" },
-    "oracle": { "model": "google/claude-opus-4-5-thinking" },
-    "librarian": { "model": "google/gemini-3-flash" },
-    "explore": { "model": "google/gemini-3-flash" },
-    "frontend-ui-ux-engineer": { "model": "google/gemini-3-flash" },
-    "document-writer": { "model": "google/gemini-3-flash" },
-    "multimodal-looker": { "model": "google/gemini-3-flash" },
-    "code-simplicity-reviewer": { "model": "google/claude-opus-4-5-thinking" }
-  }
-}
-```
-
-**Scenario B: Antigravity + OpenAI (no Cerebras)**
-```json
-{
-  "agents": {
-    "orchestrator": { "model": "google/claude-opus-4-5-thinking" },
-    "oracle": { "model": "openai/gpt-5.2-codex" },
-    "librarian": { "model": "google/gemini-3-flash" },
-    "explore": { "model": "google/gemini-3-flash" },
-    "frontend-ui-ux-engineer": { "model": "google/gemini-3-flash" },
-    "document-writer": { "model": "google/gemini-3-flash" },
-    "multimodal-looker": { "model": "google/gemini-3-flash" },
-    "code-simplicity-reviewer": { "model": "google/claude-opus-4-5-thinking" }
-  }
-}
-```
-
-**Scenario C: Antigravity + Cerebras (no OpenAI)**
-```json
-{
-  "agents": {
-    "orchestrator": { "model": "google/claude-opus-4-5-thinking" },
-    "oracle": { "model": "google/claude-opus-4-5-thinking" },
-    "librarian": { "model": "google/gemini-3-flash" },
-    "explore": { "model": "cerebras/zai-glm-4.6" },
-    "frontend-ui-ux-engineer": { "model": "google/gemini-3-flash" },
-    "document-writer": { "model": "google/gemini-3-flash" },
-    "multimodal-looker": { "model": "google/gemini-3-flash" },
-    "code-simplicity-reviewer": { "model": "google/claude-opus-4-5-thinking" }
-  }
-}
-```
-
-**Scenario D: Antigravity + OpenAI + Cerebras (full access)**
-```json
-{
-  "agents": {
-    "orchestrator": { "model": "google/claude-opus-4-5-thinking" },
-    "oracle": { "model": "openai/gpt-5.2-codex" },
-    "librarian": { "model": "google/gemini-3-flash" },
-    "explore": { "model": "cerebras/zai-glm-4.6" },
-    "frontend-ui-ux-engineer": { "model": "google/gemini-3-flash" },
-    "document-writer": { "model": "google/gemini-3-flash" },
-    "multimodal-looker": { "model": "google/gemini-3-flash" },
-    "code-simplicity-reviewer": { "model": "google/claude-opus-4-5-thinking" }
-  }
-}
-```
-
-**Scenario E: OpenAI ONLY (no Antigravity, no Cerebras)**
-```json
-{
-  "agents": {
-    "orchestrator": { "model": "openai/gpt-5.2-codex" },
-    "oracle": { "model": "openai/gpt-5.2-codex" },
-    "librarian": { "model": "openai/gpt-4.1-mini" },
-    "explore": { "model": "openai/gpt-4.1-mini" },
-    "frontend-ui-ux-engineer": { "model": "openai/gpt-4.1-mini" },
-    "document-writer": { "model": "openai/gpt-4.1-mini" },
-    "multimodal-looker": { "model": "openai/gpt-4.1-mini" },
-    "code-simplicity-reviewer": { "model": "openai/gpt-5.2-codex" }
-  }
-}
-```
-
-**Scenario F: OpenAI + Cerebras (no Antigravity)**
-```json
-{
-  "agents": {
-    "orchestrator": { "model": "openai/gpt-5.2-codex" },
-    "oracle": { "model": "openai/gpt-5.2-codex" },
-    "librarian": { "model": "openai/gpt-4.1-mini" },
-    "explore": { "model": "cerebras/zai-glm-4.6" },
-    "frontend-ui-ux-engineer": { "model": "openai/gpt-4.1-mini" },
-    "document-writer": { "model": "openai/gpt-4.1-mini" },
-    "multimodal-looker": { "model": "openai/gpt-4.1-mini" },
-    "code-simplicity-reviewer": { "model": "openai/gpt-5.2-codex" }
-  }
-}
-```
-
-**Scenario G: Cerebras ONLY (no Antigravity, no OpenAI)**
-```json
-{
-  "agents": {
-    "orchestrator": { "model": "cerebras/zai-glm-4.6" },
-    "oracle": { "model": "cerebras/zai-glm-4.6" },
-    "librarian": { "model": "cerebras/zai-glm-4.6" },
-    "explore": { "model": "cerebras/zai-glm-4.6" },
-    "frontend-ui-ux-engineer": { "model": "cerebras/zai-glm-4.6" },
-    "document-writer": { "model": "cerebras/zai-glm-4.6" },
-    "multimodal-looker": { "model": "cerebras/zai-glm-4.6" },
-    "code-simplicity-reviewer": { "model": "cerebras/zai-glm-4.6" }
-  }
-}
-```
-
----
-
-#### Step 4: Verify Configuration
-
 ```bash
-opencode --version  # Should be 1.0.150 or higher
-cat ~/.config/opencode/opencode.json
-cat ~/.config/opencode/oh-my-opencode-slim.json
+# Antigravity + OpenAI
+bunx oh-my-opencode-slim install --no-tui --antigravity=yes --openai=yes --cerebras=no
+
+# OpenAI only
+bunx oh-my-opencode-slim install --no-tui --antigravity=no --openai=yes --cerebras=no
+
+# All providers
+bunx oh-my-opencode-slim install --no-tui --antigravity=yes --openai=yes --cerebras=yes
 ```
+
+The installer automatically:
+- Adds the plugin to `~/.config/opencode/opencode.json`
+- Adds `opencode-antigravity-auth` plugin (if Antigravity enabled)
+- Configures Google provider with model definitions
+- Generates agent model mappings in `~/.config/opencode/oh-my-opencode-slim.json`
 
 ---
 
-#### Step 5: Configure Authentication
+#### Step 4: Authentication
 
-Guide the user to authenticate with their providers:
+After installation, guide the user:
 
-**For Antigravity users:**
+**For Antigravity:**
 ```bash
 opencode auth login
 # Select: Google → OAuth with Google (Antigravity)
 ```
 
-**For OpenAI users:**
+**For OpenAI:**
 ```bash
-# Set OPENAI_API_KEY environment variable
 export OPENAI_API_KEY="sk-..."
 ```
 
-**For Cerebras users:**
+**For Cerebras:**
 ```bash
-# Set CEREBRAS_API_KEY environment variable
 export CEREBRAS_API_KEY="..."
 ```
 
 ---
 
-#### Step 6: Print Final Instructions for User
+#### Step 5: Verify
 
-After writing the configuration files, print this message:
-
-```
-Configuration complete!
-
-To authenticate with your providers, run:
-
-    $ opencode auth login
-
-After authentication, start OpenCode:
-
-    $ opencode
+```bash
+opencode
 ```
 
 ---
 
-#### Quick Reference: Provider to Scenario Mapping
+#### Troubleshooting
 
-| Antigravity | OpenAI | Cerebras | Scenario | Auth Plugin Required |
-|:-----------:|:------:|:--------:|:--------:|:--------------------:|
-| Yes | No | No | A | Yes |
-| Yes | Yes | No | B | Yes |
-| Yes | No | Yes | C | Yes |
-| Yes | Yes | Yes | D | Yes |
-| No | Yes | No | E | No |
-| No | Yes | Yes | F | No |
-| No | No | Yes | G | No |
+If the installer fails, check the expected config format:
+```bash
+bunx oh-my-opencode-slim install --help
+```
+
+Then manually create the config files at:
+- `~/.config/opencode/opencode.json`
+- `~/.config/opencode/oh-my-opencode-slim.json`
 
 </details>
 
@@ -370,13 +180,64 @@ The plugin follows a "Hub and Spoke" model:
 
 ### Background Tasks
 
-The plugin provides three core tools to manage asynchronous work:
+The plugin provides tools to manage asynchronous work:
 
-- `background_task`: Launches an agent in a new session.
-  - `sync=true`: Blocks until the agent finishes (ideal for quick sub-tasks).
-  - `sync=false`: Runs in the background (ideal for long searches or research).
-- `background_output`: Fetches the result of a background task using its ID.
-- `background_cancel`: Aborts running tasks if they are no longer needed.
+| Tool | Description |
+|------|-------------|
+| `background_task` | Launch an agent in a new session (`sync=true` blocks, `sync=false` runs in background) |
+| `background_output` | Fetch the result of a background task by ID |
+| `background_cancel` | Abort running tasks |
+
+### LSP Tools
+
+Language Server Protocol integration for code intelligence:
+
+| Tool | Description |
+|------|-------------|
+| `lsp_goto_definition` | Jump to symbol definition |
+| `lsp_find_references` | Find all usages of a symbol across the workspace |
+| `lsp_diagnostics` | Get errors/warnings from the language server |
+| `lsp_rename` | Rename a symbol across all files |
+
+### Code Search Tools
+
+Fast code search and refactoring:
+
+| Tool | Description |
+|------|-------------|
+| `grep` | Fast content search using ripgrep |
+| `ast_grep_search` | AST-aware code pattern matching (25 languages) |
+| `ast_grep_replace` | AST-aware code refactoring with dry-run support |
+
+### Quota Tool
+
+For Antigravity users:
+
+| Tool | Description |
+|------|-------------|
+| `antigravity_quota` | Check API quota for all Antigravity accounts (compact view with progress bars) |
+
+---
+
+## MCP Servers
+
+Built-in Model Context Protocol servers (enabled by default):
+
+| MCP | Purpose | URL |
+|-----|---------|-----|
+| `websearch` | Real-time web search via Exa AI | `https://mcp.exa.ai/mcp` |
+| `context7` | Official library documentation | `https://mcp.context7.com/mcp` |
+| `grep_app` | GitHub code search via grep.app | `https://mcp.grep.app` |
+
+### Disabling MCPs
+
+You can disable specific MCP servers in your config:
+
+```json
+{
+  "disabled_mcps": ["websearch", "grep_app"]
+}
+```
 
 ---
 
