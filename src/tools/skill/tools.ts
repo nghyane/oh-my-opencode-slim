@@ -1,9 +1,17 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { Tool, Resource, Prompt } from "@modelcontextprotocol/sdk/types.js";
 import { SKILL_MCP_TOOL_DESCRIPTION, SKILL_TOOL_DESCRIPTION } from "./constants";
-import { getSkillByName, getBuiltinSkills } from "./builtin";
+import { getSkillByName, getBuiltinSkills, getSkillsForAgent, canAgentUseSkill } from "./builtin";
 import type { SkillArgs, SkillMcpArgs, SkillDefinition } from "./types";
 import { SkillMcpManager } from "./mcp-manager";
+import type { PluginConfig } from "../../config/schema";
+
+type ToolContext = {
+  sessionID: string;
+  messageID: string;
+  agent: string;
+  abort: AbortSignal;
+};
 
 function formatSkillsXml(skills: SkillDefinition[]): string {
   if (skills.length === 0) return "";
@@ -92,7 +100,7 @@ async function formatMcpCapabilities(
 
     sections.push("");
     sections.push(
-      `Use \`omo_skill_mcp\` tool with \`mcp_name="${serverName}"\` to invoke.`
+      `Use \`omos_skill_mcp\` tool with \`mcp_name="${serverName}"\` to invoke.`
     );
     sections.push("");
   }
@@ -101,11 +109,12 @@ async function formatMcpCapabilities(
 }
 
 export function createSkillTools(
-  manager: SkillMcpManager
-): { omo_skill: ToolDefinition; omo_skill_mcp: ToolDefinition } {
-  const skills = getBuiltinSkills();
+  manager: SkillMcpManager,
+  pluginConfig?: PluginConfig
+): { omos_skill: ToolDefinition; omos_skill_mcp: ToolDefinition } {
+  const allSkills = getBuiltinSkills();
   const description =
-    SKILL_TOOL_DESCRIPTION + (skills.length > 0 ? formatSkillsXml(skills) : "");
+    SKILL_TOOL_DESCRIPTION + (allSkills.length > 0 ? formatSkillsXml(allSkills) : "");
 
   const skill: ToolDefinition = tool({
     description,
@@ -113,14 +122,25 @@ export function createSkillTools(
       name: tool.schema.string().describe("The skill identifier from available_skills"),
     },
     async execute(args: SkillArgs, toolContext) {
-      const sessionId = toolContext?.sessionID
-        ? String(toolContext.sessionID)
-        : "unknown";
+      const tctx = toolContext as ToolContext | undefined;
+      const sessionId = tctx?.sessionID ? String(tctx.sessionID) : "unknown";
+      const agentName = tctx?.agent ?? "orchestrator";
+
       const skillDefinition = getSkillByName(args.name);
       if (!skillDefinition) {
-        const available = skills.map(s => s.name).join(", ");
+        const available = allSkills.map(s => s.name).join(", ");
         throw new Error(
           `Skill "${args.name}" not found. Available skills: ${available || "none"}`
+        );
+      }
+
+      // Check if this agent can use this skill
+      if (!canAgentUseSkill(agentName, args.name, pluginConfig)) {
+        const allowedSkills = getSkillsForAgent(agentName, pluginConfig);
+        const allowedNames = allowedSkills.map(s => s.name).join(", ");
+        throw new Error(
+          `Agent "${agentName}" cannot use skill "${args.name}". ` +
+          `Available skills for this agent: ${allowedNames || "none"}`
         );
       }
 
@@ -154,14 +174,22 @@ export function createSkillTools(
       toolArgs: tool.schema.record(tool.schema.string(), tool.schema.any()).optional(),
     },
     async execute(args: SkillMcpArgs, toolContext) {
-      const sessionId = toolContext?.sessionID
-        ? String(toolContext.sessionID)
-        : "unknown";
+      const tctx = toolContext as ToolContext | undefined;
+      const sessionId = tctx?.sessionID ? String(tctx.sessionID) : "unknown";
+      const agentName = tctx?.agent ?? "orchestrator";
+
       const skillDefinition = getSkillByName(args.skillName);
       if (!skillDefinition) {
-        const available = skills.map(s => s.name).join(", ");
+        const available = allSkills.map(s => s.name).join(", ");
         throw new Error(
           `Skill "${args.skillName}" not found. Available skills: ${available || "none"}`
+        );
+      }
+
+      // Check if this agent can use this skill
+      if (!canAgentUseSkill(agentName, args.skillName, pluginConfig)) {
+        throw new Error(
+          `Agent "${agentName}" cannot use skill "${args.skillName}".`
         );
       }
 
@@ -193,5 +221,5 @@ export function createSkillTools(
     },
   });
 
-  return { omo_skill: skill, omo_skill_mcp: skill_mcp };
+  return { omos_skill: skill, omos_skill_mcp: skill_mcp };
 }

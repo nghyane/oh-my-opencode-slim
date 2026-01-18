@@ -97,18 +97,19 @@ function formatConfigSummary(config: InstallConfig): string {
 
 function printAgentModels(config: InstallConfig): void {
   const liteConfig = generateLiteConfig(config)
-  const agents = liteConfig.agents as Record<string, { model: string }>
+  const agents = liteConfig.agents as Record<string, { model: string; skills: string[] }>
 
   if (!agents || Object.keys(agents).length === 0) return
 
-  console.log(`${BOLD}Agent Model Configuration:${RESET}`)
+  console.log(`${BOLD}Agent Configuration:${RESET}`)
   console.log()
 
   const maxAgentLen = Math.max(...Object.keys(agents).map((a) => a.length))
 
   for (const [agent, info] of Object.entries(agents)) {
     const padding = " ".repeat(maxAgentLen - agent.length)
-    console.log(`  ${DIM}${agent}${RESET}${padding} ${SYMBOLS.arrow} ${BLUE}${info.model}${RESET}`)
+    const skillsStr = info.skills.length > 0 ? ` ${DIM}[${info.skills.join(", ")}]${RESET}` : ""
+    console.log(`  ${DIM}${agent}${RESET}${padding} ${SYMBOLS.arrow} ${BLUE}${info.model}${RESET}${skillsStr}`)
   }
   console.log()
 }

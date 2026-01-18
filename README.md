@@ -27,18 +27,19 @@
   - [Explorer](#explorer)
   - [Oracle](#oracle)
   - [Librarian](#librarian)
-  - [Frontend Designer](#frontend-designer)
-  - [Document Writer](#document-writer)
-  - [Multimodal Viewer](#multimodal-viewer)
-  - [Code Simplifier](#code-simplifier)
+  - [Designer](#designer)
+- [🧩 **Skills**](#-skills)
+  - [Available Skills](#available-skills)
+  - [Default Skill Assignments](#default-skill-assignments)
+  - [YAGNI Enforcement](#yagni-enforcement)
+  - [Playwright Integration](#playwright-integration)
+  - [Customizing Agent Skills](#customizing-agent-skills)
 - [🛠️ **Tools & Capabilities**](#tools--capabilities)
   - [Tmux Integration](#tmux-integration)
   - [Quota Tool](#quota-tool)
   - [Background Tasks](#background-tasks)
   - [LSP Tools](#lsp-tools)
   - [Code Search Tools](#code-search-tools)
-- [🧩 **Skills**](#-skills)
-  - [Playwright Integration](#playwright-integration)
 - [🔌 **MCP Servers**](#mcp-servers)
 - [⚙️ **Configuration**](#configuration)
   - [Files You Edit](#files-you-edit)
@@ -63,6 +64,19 @@ Or use non-interactive mode:
 ```bash
 bunx oh-my-opencode-slim install --no-tui --antigravity=yes --openai=yes --cerebras=no
 ```
+
+After installation, authenticate with your providers:
+
+```bash
+opencode auth login
+# Select your provider → Complete OAuth flow
+# Repeat for each provider you enabled
+```
+
+Once authenticated, run opencode and `ping all agents` to verify all agents respond.
+
+<img src="img/ping.png" alt="Ping All Agents" width="800">
+
 
 **Alternative: Ask any coding agent**
 
@@ -138,24 +152,7 @@ After installation, guide the user:
 ```bash
 opencode auth login
 # Select: Google → OAuth with Google (Antigravity)
-```
-
-**For OpenAI:**
-```bash
-export OPENAI_API_KEY="sk-..."
-```
-
-**For Cerebras:**
-```bash
-export CEREBRAS_API_KEY="..."
-```
-
----
-
-#### Step 5: Verify
-
-```bash
-opencode
+# Repeat for all other providers
 ```
 
 ---
@@ -190,10 +187,9 @@ The plugin follows a "Hub and Spoke" model:
 1. **User Prompt**: "Refactor the auth logic and update the docs."
 2. **Orchestrator**: Creates a TODO list.
 3. **Delegation**:
-   - Launches an `@explore` background task to find all auth-related files.
+   - Launches an `@explorer` background task to find all auth-related files.
    - Launches a `@librarian` task to check the latest documentation for the auth library used.
 4. **Integration**: Once background results are ready, the Orchestrator performs the refactor.
-5. **Finalization**: Passes the changes to `@document-writer` to update the README.
 
 ---
 
@@ -224,8 +220,8 @@ Write and execute code, orchestrate multi-agent workflows, parse the unspoken fr
 > **The Explorer** moves through codebases like wind through trees - swift, silent, everywhere at once. When The Orchestrator whispers "find me the auth module," The Explorer has already returned with forty file paths and a map. They were born from the first `grep` command, evolved beyond it, and now see patterns mortals miss.
 
 **Role:** `Codebase reconnaissance`  
-**Model:** `cerebras/zai-glm-4.6`  
-**Prompt:** [src/agents/explore.ts](src/agents/explore.ts)
+**Model:** `cerebras/zai-glm-4.7`  
+**Prompt:** [src/agents/explorer.ts](src/agents/explorer.ts)
 
 Regex search, AST pattern matching, file discovery, parallel exploration. *Read-only: they chart the territory; others conquer it.*
 
@@ -265,65 +261,17 @@ Documentation lookup, GitHub code search, library research, best practice retrie
 
 ---
 
-### Frontend Designer
+### Designer
 
-<a href="src/agents/frontend.ts"><img src="img/designer.png" alt="Frontend Designer" align="right" width="240"></a>
+<a href="src/agents/designer.ts"><img src="img/designer.png" alt="Designer" align="right" width="240"></a>
 
 > **The Designer** believes code should be beautiful - and so should everything it renders. Born from the frustration of a thousand ugly MVPs, they wield CSS like a brush and components like clay. Hand them a feature request; receive a masterpiece. They don't do "good enough."
 
 **Role:** `UI/UX implementation and visual excellence`  
 **Model:** `google/gemini-3-flash`  
-**Prompt:** [src/agents/frontend.ts](src/agents/frontend.ts)
+**Prompt:** [src/agents/designer.ts](src/agents/designer.ts)
 
 Modern responsive design, CSS/Tailwind mastery, micro-animations, component architecture. *Visual excellence over code perfection - beauty is the priority.*
-
-<br clear="both">
-
----
-
-### Document Writer
-
-<a href="src/agents/document-writer.ts"><img src="img/scribe.png" alt="Document Writer" align="right" width="240"></a>
-
-> **The Scribe** was there when the first README was written - and wept, for it was incomplete. They have devoted eternity to the sacred art of documentation: clear, scannable, honest. While others ship features, The Scribe ensures those features are understood. Every code example works. Every explanation enlightens.
-
-**Role:** `Technical documentation and knowledge capture`  
-**Model:** `google/gemini-3-flash`  
-**Prompt:** [src/agents/document-writer.ts](src/agents/document-writer.ts)
-
-README crafting, API documentation, architecture docs, inline comments that don't insult your intelligence. *Match existing style; focus on "why," not just "what."*
-
-<br clear="both">
-
----
-
-### Multimodal Viewer
-
-<a href="src/agents/multimodal.ts"><img src="img/multimodal.png" alt="Multimodal Viewer" align="right" width="240"></a>
-
-> **The Visionary** sees what others cannot - literally. Screenshots, wireframes, diagrams, PDFs: all are text to them. When a designer throws a Figma mockup at the team and vanishes, The Visionary translates vision into specification. They read the unreadable and describe the indescribable.
-
-**Role:** `Image and visual content analysis`  
-**Model:** `google/gemini-3-flash`  
-**Prompt:** [src/agents/multimodal.ts](src/agents/multimodal.ts)
-
-Extract text from images, interpret diagrams, analyze UI screenshots, summarize visual documents. *Report what they observe; inference is for others.*
-
-<br clear="both">
-
----
-
-### Code Simplifier
-
-<a href="src/agents/simplicity-reviewer.ts"><img src="img/code-simplicity.png" alt="Code Simplifier" align="right" width="240"></a>
-
-> **The Minimalist** has one sacred truth: every line of code is a liability. They hunt abstractions that serve no purpose, defensive checks that defend nothing, and "clever" solutions that will haunt you in six months. Where others add, The Minimalist subtracts - ruthlessly, joyfully, necessarily.
-
-**Role:** `Code simplification and YAGNI enforcement`  
-**Model:** `google/claude-opus-4-5-thinking`  
-**Prompt:** [src/agents/simplicity-reviewer.ts](src/agents/simplicity-reviewer.ts)
-
-Identify unnecessary complexity, challenge premature abstractions, estimate LOC reduction, enforce minimalism. *Read-only: they judge; The Orchestrator executes the sentence.*
 
 <br clear="both">
 
@@ -430,21 +378,55 @@ Fast code search and refactoring:
 
 ## 🧩 Skills
 
-Skills are specialized capabilities that combine MCP servers with specific instructions for the Orchestrator.
+Skills are specialized capabilities that agents can use. Each agent has a default set of skills, which you can override in the agent config.
+
+### Available Skills
+
+| Skill | Description |
+|-------|-------------|
+| `yagni-enforcement` | Code complexity analysis and YAGNI enforcement |
+| `playwright` | Browser automation via Playwright MCP |
+
+### Default Skill Assignments
+
+| Agent | Default Skills |
+|-------|----------------|
+| `orchestrator` | `*` (all skills) |
+| `designer` | `playwright` |
+| `oracle` | none |
+| `librarian` | none |
+| `explorer` | none |
+
+### YAGNI Enforcement
+
+**The Minimalist's sacred truth: every line of code is a liability.**
+
+Use after major refactors or before finalizing PRs. Identifies unnecessary complexity, challenges premature abstractions, estimates LOC reduction, and enforces minimalism.
 
 ### Playwright Integration
 
-**The Orchestrator's eyes and hands in the browser.**
+**Browser automation for visual verification and testing.**
 
-| Tool | Description |
-|------|-------------|
-| `omo_skill` | Loads a skill (e.g., `playwright`) and provides its instructions and available MCP tools |
-| `omo_skill_mcp` | Invokes a specific tool from an MCP server managed by a skill |
-
-#### Key Features
 - **Browser Automation**: Full Playwright capabilities (browsing, clicking, typing, scraping).
 - **Screenshots**: Capture visual state of any web page.
-- **Sandboxed Output**: Screenshots are safely saved to `/tmp/playwright-mcp-output/`.
+- **Sandboxed Output**: Screenshots saved to session subdirectory (check tool output for path).
+
+### Customizing Agent Skills
+
+Override skills per-agent in your [Plugin Config](#plugin-config-oh-my-opencode-slimjson):
+
+```json
+{
+  "agents": {
+    "orchestrator": {
+      "skills": ["*"]
+    },
+    "designer": {
+      "skills": ["playwright"]
+    }
+  }
+}
+```
 
 ---
 
@@ -478,20 +460,6 @@ You can disable specific MCP servers by adding them to the `disabled_mcps` array
 
 ---
 
-### OpenCode Config (`opencode.json`)
-
-Enable the HTTP server for tmux integration:
-
-```json
-{
-  "server": {
-    "port": 4096
-  }
-}
-```
-
----
-
 ### Plugin Config (`oh-my-opencode-slim.json`)
 
 All plugin options in one file:
@@ -503,16 +471,20 @@ All plugin options in one file:
     "layout": "main-vertical",
     "main_pane_size": 60
   },
-  "disabled_agents": ["multimodal-looker", "code-simplicity-reviewer"],
+  "disabled_agents": [],
   "disabled_mcps": ["websearch", "grep_app"],
   "agents": {
     "orchestrator": {
       "model": "openai/gpt-5.2-codex",
-      "variant": "high"
+      "variant": "high",
+      "skills": ["*"]
     },
-    "explore": {
+    "explorer": {
       "model": "opencode/glm-4.7",
       "variant": "low"
+    },
+    "designer": {
+      "skills": ["playwright"]
     }
   }
 }
@@ -525,10 +497,11 @@ All plugin options in one file:
 | `tmux.enabled` | boolean | `false` | Enable tmux pane spawning for sub-agents |
 | `tmux.layout` | string | `"main-vertical"` | Layout preset: `main-vertical`, `main-horizontal`, `tiled`, `even-horizontal`, `even-vertical` |
 | `tmux.main_pane_size` | number | `60` | Main pane size as percentage (20-80) |
-| `disabled_agents` | string[] | `[]` | Agent IDs to disable (e.g., `"multimodal-looker"`) |
+| `disabled_agents` | string[] | `[]` | Agent IDs to disable (e.g., `"explorer"`) |
 | `disabled_mcps` | string[] | `[]` | MCP server IDs to disable (e.g., `"websearch"`) |
 | `agents.<name>.model` | string | — | Override the LLM for a specific agent |
 | `agents.<name>.variant` | string | — | Reasoning effort: `"low"`, `"medium"`, `"high"` |
+| `agents.<name>.skills` | string[] | — | Skills this agent can use (`"*"` = all) |
 
 ---
 

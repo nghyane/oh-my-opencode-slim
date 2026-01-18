@@ -3,15 +3,22 @@ import { DEFAULT_MODELS, type AgentName, type PluginConfig, type AgentOverrideCo
 import { createOrchestratorAgent, type AgentDefinition } from "./orchestrator";
 import { createOracleAgent } from "./oracle";
 import { createLibrarianAgent } from "./librarian";
-import { createExploreAgent } from "./explore";
-import { createFrontendAgent } from "./frontend";
-import { createDocumentWriterAgent } from "./document-writer";
-import { createMultimodalAgent } from "./multimodal";
-import { createSimplicityReviewerAgent } from "./simplicity-reviewer";
+import { createExplorerAgent } from "./explorer";
+import { createDesignerAgent } from "./designer";
 
 export type { AgentDefinition } from "./orchestrator";
 
 type AgentFactory = (model: string) => AgentDefinition;
+
+/** Map old agent names to new names for backward compatibility */
+const AGENT_ALIASES: Record<string, string> = {
+  "explore": "explorer",
+  "frontend-ui-ux-engineer": "designer",
+};
+
+function getOverride(overrides: Record<string, AgentOverrideConfig>, name: string): AgentOverrideConfig | undefined {
+  return overrides[name] ?? overrides[Object.keys(AGENT_ALIASES).find(k => AGENT_ALIASES[k] === name) ?? ""];
+}
 
 function applyOverrides(agent: AgentDefinition, override: AgentOverrideConfig): void {
   if (override.model) agent.config.model = override.model;
@@ -33,13 +40,10 @@ type SubagentName = Exclude<AgentName, "orchestrator">;
 
 /** Agent factories indexed by name */
 const SUBAGENT_FACTORIES: Record<SubagentName, AgentFactory> = {
-  explore: createExploreAgent,
+  explorer: createExplorerAgent,
   librarian: createLibrarianAgent,
   oracle: createOracleAgent,
-  "frontend-ui-ux-engineer": createFrontendAgent,
-  "document-writer": createDocumentWriterAgent,
-  "multimodal-looker": createMultimodalAgent,
-  "code-simplicity-reviewer": createSimplicityReviewerAgent,
+  designer: createDesignerAgent,
 };
 
 /** Get list of agent names */
@@ -60,7 +64,7 @@ export function createAgents(config?: PluginConfig): AgentDefinition[] {
   const allSubAgents = protoSubAgents
     .filter((a) => !disabledAgents.has(a.name))
     .map((agent) => {
-      const override = agentOverrides[agent.name];
+      const override = getOverride(agentOverrides, agent.name);
       if (override) {
         applyOverrides(agent, override);
       }
@@ -69,10 +73,10 @@ export function createAgents(config?: PluginConfig): AgentDefinition[] {
 
   // 3. Create Orchestrator (with its own overrides)
   const orchestratorModel =
-    agentOverrides["orchestrator"]?.model ?? DEFAULT_MODELS["orchestrator"];
+    getOverride(agentOverrides, "orchestrator")?.model ?? DEFAULT_MODELS["orchestrator"];
   const orchestrator = createOrchestratorAgent(orchestratorModel);
   applyDefaultPermissions(orchestrator);
-  const oOverride = agentOverrides["orchestrator"];
+  const oOverride = getOverride(agentOverrides, "orchestrator");
   if (oOverride) {
     applyOverrides(orchestrator, oOverride);
   }

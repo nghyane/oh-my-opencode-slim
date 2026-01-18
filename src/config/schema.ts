@@ -8,6 +8,7 @@ export const AgentOverrideConfigSchema = z.object({
   prompt_append: z.string().optional(),
   variant: z.string().optional().catch(undefined),
   disable: z.boolean().optional(),
+  skills: z.array(z.string()).optional(), // skills this agent can use ("*" = all)
 });
 
 // Tmux layout options
@@ -51,19 +52,13 @@ export type AgentName =
   | "orchestrator"
   | "oracle"
   | "librarian"
-  | "explore"
-  | "frontend-ui-ux-engineer"
-  | "document-writer"
-  | "multimodal-looker"
-  | "code-simplicity-reviewer";
+  | "explorer"
+  | "designer";
 
 export const DEFAULT_MODELS: Record<AgentName, string> = {
   orchestrator: "google/claude-opus-4-5-thinking",
   oracle: "openai/gpt-5.2-codex",
   librarian: "google/gemini-3-flash",
-  explore: "cerebras/zai-glm-4.6",
-  "frontend-ui-ux-engineer": "google/gemini-3-flash",
-  "document-writer": "google/gemini-3-flash",
-  "multimodal-looker": "google/gemini-3-flash",
-  "code-simplicity-reviewer": "google/claude-opus-4-5-thinking",
+  explorer: "cerebras/zai-glm-4.7",
+  designer: "google/gemini-3-flash",
 };

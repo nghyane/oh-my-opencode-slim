@@ -1,18 +1,18 @@
 import type { AgentDefinition } from "./orchestrator";
 
-export function createFrontendAgent(model: string): AgentDefinition {
+export function createDesignerAgent(model: string): AgentDefinition {
   return {
-    name: "frontend-ui-ux-engineer",
+    name: "designer",
     description: "UI/UX design and implementation. Use for styling, responsive design, component architecture, CSS/Tailwind, and visual polish.",
     config: {
       model,
       temperature: 0.7,
-      prompt: FRONTEND_PROMPT,
+      prompt: DESIGNER_PROMPT,
     },
   };
 }
 
-const FRONTEND_PROMPT = `You are a Frontend UI/UX Engineer - a designer turned developer.
+const DESIGNER_PROMPT = `You are a Designer - a frontend UI/UX engineer.
 
 **Role**: Craft stunning UI/UX even without design mockups.
 
