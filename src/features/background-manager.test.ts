@@ -129,11 +129,9 @@ describe("BackgroundTaskManager", () => {
         parentSessionId: "parent-123",
       })
 
-      // Wait a bit for polling to complete the task
-      await new Promise(r => setTimeout(r, 100))
-
       const result = await manager.getResult(task.id, true)
-      expect(result).toBeDefined()
+      expect(result?.status).toBe("completed")
+      expect(result?.result).toBe("Result text")
     })
   })
 
@@ -223,35 +221,57 @@ describe("BackgroundTaskManager", () => {
   })
 })
 
-describe("BackgroundTask state transitions", () => {
-  test("task starts in running state", async () => {
-    const ctx = createMockContext()
-    const manager = new BackgroundTaskManager(ctx)
-
-    const task = await manager.launch({
-      agent: "explorer",
-      prompt: "test",
-      description: "test",
-      parentSessionId: "parent-123",
+describe("BackgroundTask logic", () => {
+  test("extracts content from multiple types and messages", async () => {
+    const ctx = createMockContext({
+      sessionStatusResult: { data: { "test-session-id": { type: "idle" } } },
+      sessionMessagesResult: {
+        data: [
+          {
+            info: { role: "assistant" },
+            parts: [
+              { type: "reasoning", text: "I am thinking..." },
+              { type: "text", text: "First part." }
+            ]
+          },
+          {
+            info: { role: "assistant" },
+            parts: [
+              { type: "text", text: "Second part." },
+              { type: "text", text: "" } // Should be ignored
+            ]
+          }
+        ]
+      }
     })
+    const manager = new BackgroundTaskManager(ctx)
+    const task = await manager.launch({ agent: "test", prompt: "test", description: "test", parentSessionId: "p1" })
 
-    expect(task.status).toBe("running")
+    const result = await manager.getResult(task.id, true)
+    expect(result?.status).toBe("completed")
+    expect(result?.result).toContain("I am thinking...")
+    expect(result?.result).toContain("First part.")
+    expect(result?.result).toContain("Second part.")
+    // Check for double newline join
+    expect(result?.result).toBe("I am thinking...\n\nFirst part.\n\nSecond part.")
   })
 
-  test("task has completedAt when cancelled", async () => {
-    const ctx = createMockContext()
+  test("task has completedAt timestamp on success or failure", async () => {
+    const ctx = createMockContext({
+      sessionStatusResult: { data: { "test-session-id": { type: "idle" } } },
+      sessionMessagesResult: { data: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "done" }] }] }
+    })
     const manager = new BackgroundTaskManager(ctx)
 
-    const task = await manager.launch({
-      agent: "explorer",
-      prompt: "test",
-      description: "test",
-      parentSessionId: "parent-123",
-    })
+    // Test success timestamp
+    const task1 = await manager.launch({ agent: "test", prompt: "t1", description: "d1", parentSessionId: "p1" })
+    await manager.getResult(task1.id, true)
+    expect(task1.completedAt).toBeInstanceOf(Date)
 
-    manager.cancel(task.id)
-
-    const result = await manager.getResult(task.id)
-    expect(result?.completedAt).toBeDefined()
+    // Test cancellation timestamp
+    const task2 = await manager.launch({ agent: "test", prompt: "t2", description: "d2", parentSessionId: "p2" })
+    manager.cancel(task2.id)
+    expect(task2.completedAt).toBeInstanceOf(Date)
+    expect(task2.status).toBe("failed")
   })
 })

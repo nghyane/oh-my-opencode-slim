@@ -4,6 +4,13 @@ import { spawn, type Subprocess } from "bun"
 import { readFileSync } from "fs"
 import { extname, resolve } from "path"
 import { pathToFileURL } from "node:url"
+import { Readable, Writable } from "node:stream"
+import {
+  createMessageConnection,
+  StreamMessageReader,
+  StreamMessageWriter,
+  type MessageConnection,
+} from "vscode-jsonrpc/node"
 import { getLanguageId } from "./config"
 import type { Diagnostic, ResolvedServer } from "./types"
 
@@ -156,9 +163,7 @@ export const lspManager = LSPServerManager.getInstance()
 
 export class LSPClient {
   private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null
-  private buffer: Uint8Array = new Uint8Array(0)
-  private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
-  private requestIdCounter = 0
+  private connection: MessageConnection | null = null
   private openedFiles = new Set<string>()
   private stderrBuffer: string[] = []
   private processExited = false
@@ -185,8 +190,69 @@ export class LSPClient {
       throw new Error(`Failed to spawn LSP server: ${this.server.command.join(" ")}`)
     }
 
-    this.startReading()
     this.startStderrReading()
+
+    // Create JSON-RPC connection
+    const stdoutReader = this.proc.stdout.getReader()
+    const nodeReadable = new Readable({
+      async read() {
+        try {
+          const { done, value } = await stdoutReader.read()
+          if (done) {
+            this.push(null)
+          } else {
+            this.push(value)
+          }
+        } catch (err) {
+          this.destroy(err as Error)
+        }
+      },
+    })
+
+    const stdin = this.proc.stdin
+    const nodeWritable = new Writable({
+      write(chunk, encoding, callback) {
+        try {
+          stdin.write(chunk)
+          callback()
+        } catch (err) {
+          callback(err as Error)
+        }
+      },
+      final(callback) {
+        try {
+          stdin.end()
+          callback()
+        } catch (err) {
+          callback(err as Error)
+        }
+      },
+    })
+
+    this.connection = createMessageConnection(new StreamMessageReader(nodeReadable), new StreamMessageWriter(nodeWritable))
+
+    this.connection.onNotification("textDocument/publishDiagnostics", (params: any) => {
+      if (params.uri) {
+        this.diagnosticsStore.set(params.uri, params.diagnostics ?? [])
+      }
+    })
+
+    this.connection.onRequest("workspace/configuration", (params: any) => {
+      const items = params.items ?? []
+      return items.map((item: any) => {
+        if (item.section === "json") return { validate: { enable: true } }
+        return {}
+      })
+    })
+
+    this.connection.onRequest("client/registerCapability", () => null)
+    this.connection.onRequest("window/workDoneProgress/create", () => null)
+
+    this.connection.onClose(() => {
+      this.processExited = true
+    })
+
+    this.connection.listen()
 
     await new Promise((resolve) => setTimeout(resolve, 100))
 
@@ -196,33 +262,6 @@ export class LSPClient {
         `LSP server exited immediately with code ${this.proc.exitCode}` + (stderr ? `\nstderr: ${stderr}` : "")
       )
     }
-  }
-
-  private startReading(): void {
-    if (!this.proc) return
-
-    const reader = this.proc.stdout.getReader()
-    const read = async () => {
-      try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) {
-            this.processExited = true
-            this.rejectAllPending("LSP server stdout closed")
-            break
-          }
-          const newBuf = new Uint8Array(this.buffer.length + value.length)
-          newBuf.set(this.buffer)
-          newBuf.set(value, this.buffer.length)
-          this.buffer = newBuf
-          this.processBuffer()
-        }
-      } catch (err) {
-        this.processExited = true
-        this.rejectAllPending(`LSP stdout read error: ${err}`)
-      }
-    }
-    read()
   }
 
   private startStderrReading(): void {
@@ -246,135 +285,11 @@ export class LSPClient {
     read()
   }
 
-  private rejectAllPending(reason: string): void {
-    for (const [id, handler] of this.pending) {
-      handler.reject(new Error(reason))
-      this.pending.delete(id)
-    }
-  }
-
-  private findSequence(haystack: Uint8Array, needle: number[]): number {
-    outer: for (let i = 0; i <= haystack.length - needle.length; i++) {
-      for (let j = 0; j < needle.length; j++) {
-        if (haystack[i + j] !== needle[j]) continue outer
-      }
-      return i
-    }
-    return -1
-  }
-
-  private processBuffer(): void {
-    const decoder = new TextDecoder()
-    const CONTENT_LENGTH = [67, 111, 110, 116, 101, 110, 116, 45, 76, 101, 110, 103, 116, 104, 58]
-    const CRLF_CRLF = [13, 10, 13, 10]
-    const LF_LF = [10, 10]
-
-    while (true) {
-      const headerStart = this.findSequence(this.buffer, CONTENT_LENGTH)
-      if (headerStart === -1) break
-      if (headerStart > 0) this.buffer = this.buffer.slice(headerStart)
-
-      let headerEnd = this.findSequence(this.buffer, CRLF_CRLF)
-      let sepLen = 4
-      if (headerEnd === -1) {
-        headerEnd = this.findSequence(this.buffer, LF_LF)
-        sepLen = 2
-      }
-      if (headerEnd === -1) break
-
-      const header = decoder.decode(this.buffer.slice(0, headerEnd))
-      const match = header.match(/Content-Length:\s*(\d+)/i)
-      if (!match) break
-
-      const len = parseInt(match[1], 10)
-      const start = headerEnd + sepLen
-      const end = start + len
-      if (this.buffer.length < end) break
-
-      const content = decoder.decode(this.buffer.slice(start, end))
-      this.buffer = this.buffer.slice(end)
-
-      try {
-        const msg = JSON.parse(content)
-
-        if ("method" in msg && !("id" in msg)) {
-          if (msg.method === "textDocument/publishDiagnostics" && msg.params?.uri) {
-            this.diagnosticsStore.set(msg.params.uri, msg.params.diagnostics ?? [])
-          }
-        } else if ("id" in msg && "method" in msg) {
-          this.handleServerRequest(msg.id, msg.method, msg.params)
-        } else if ("id" in msg && this.pending.has(msg.id)) {
-          const handler = this.pending.get(msg.id)!
-          this.pending.delete(msg.id)
-          if ("error" in msg) {
-            handler.reject(new Error(msg.error.message))
-          } else {
-            handler.resolve(msg.result)
-          }
-        }
-      } catch {}
-    }
-  }
-
-  private send(method: string, params?: unknown): Promise<unknown> {
-    if (!this.proc) throw new Error("LSP client not started")
-
-    if (this.processExited || this.proc.exitCode !== null) {
-      const stderr = this.stderrBuffer.slice(-10).join("\n")
-      throw new Error(`LSP server already exited (code: ${this.proc.exitCode})` + (stderr ? `\nstderr: ${stderr}` : ""))
-    }
-
-    const id = ++this.requestIdCounter
-    const msg = JSON.stringify({ jsonrpc: "2.0", id, method, params })
-    const header = `Content-Length: ${Buffer.byteLength(msg)}\r\n\r\n`
-    this.proc.stdin.write(header + msg)
-
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id)
-          const stderr = this.stderrBuffer.slice(-5).join("\n")
-          reject(new Error(`LSP request timeout (method: ${method})` + (stderr ? `\nrecent stderr: ${stderr}` : "")))
-        }
-      }, 15000)
-    })
-  }
-
-  private notify(method: string, params?: unknown): void {
-    if (!this.proc) return
-    if (this.processExited || this.proc.exitCode !== null) return
-
-    const msg = JSON.stringify({ jsonrpc: "2.0", method, params })
-    this.proc.stdin.write(`Content-Length: ${Buffer.byteLength(msg)}\r\n\r\n${msg}`)
-  }
-
-  private respond(id: number | string, result: unknown): void {
-    if (!this.proc) return
-    if (this.processExited || this.proc.exitCode !== null) return
-
-    const msg = JSON.stringify({ jsonrpc: "2.0", id, result })
-    this.proc.stdin.write(`Content-Length: ${Buffer.byteLength(msg)}\r\n\r\n${msg}`)
-  }
-
-  private handleServerRequest(id: number | string, method: string, params?: unknown): void {
-    if (method === "workspace/configuration") {
-      const items = (params as { items?: Array<{ section?: string }> })?.items ?? []
-      const result = items.map((item) => {
-        if (item.section === "json") return { validate: { enable: true } }
-        return {}
-      })
-      this.respond(id, result)
-    } else if (method === "client/registerCapability") {
-      this.respond(id, null)
-    } else if (method === "window/workDoneProgress/create") {
-      this.respond(id, null)
-    }
-  }
-
   async initialize(): Promise<void> {
+    if (!this.connection) throw new Error("LSP connection not established")
+
     const rootUri = pathToFileURL(this.root).href
-    await this.send("initialize", {
+    await this.connection.sendRequest("initialize", {
       processId: process.pid,
       rootUri,
       rootPath: this.root,
@@ -402,7 +317,7 @@ export class LSPClient {
       },
       ...this.server.initialization,
     })
-    this.notify("initialized")
+    this.connection.sendNotification("initialized")
     await new Promise((r) => setTimeout(r, 300))
   }
 
@@ -414,7 +329,7 @@ export class LSPClient {
     const ext = extname(absPath)
     const languageId = getLanguageId(ext)
 
-    this.notify("textDocument/didOpen", {
+    this.connection?.sendNotification("textDocument/didOpen", {
       textDocument: {
         uri: pathToFileURL(absPath).href,
         languageId,
@@ -430,7 +345,7 @@ export class LSPClient {
   async definition(filePath: string, line: number, character: number): Promise<unknown> {
     const absPath = resolve(filePath)
     await this.openFile(absPath)
-    return this.send("textDocument/definition", {
+    return this.connection?.sendRequest("textDocument/definition", {
       textDocument: { uri: pathToFileURL(absPath).href },
       position: { line: line - 1, character },
     })
@@ -439,7 +354,7 @@ export class LSPClient {
   async references(filePath: string, line: number, character: number, includeDeclaration = true): Promise<unknown> {
     const absPath = resolve(filePath)
     await this.openFile(absPath)
-    return this.send("textDocument/references", {
+    return this.connection?.sendRequest("textDocument/references", {
       textDocument: { uri: pathToFileURL(absPath).href },
       position: { line: line - 1, character },
       context: { includeDeclaration },
@@ -453,7 +368,7 @@ export class LSPClient {
     await new Promise((r) => setTimeout(r, 500))
 
     try {
-      const result = await this.send("textDocument/diagnostic", {
+      const result = await this.connection?.sendRequest("textDocument/diagnostic", {
         textDocument: { uri },
       })
       if (result && typeof result === "object" && "items" in result) {
@@ -467,7 +382,7 @@ export class LSPClient {
   async rename(filePath: string, line: number, character: number, newName: string): Promise<unknown> {
     const absPath = resolve(filePath)
     await this.openFile(absPath)
-    return this.send("textDocument/rename", {
+    return this.connection?.sendRequest("textDocument/rename", {
       textDocument: { uri: pathToFileURL(absPath).href },
       position: { line: line - 1, character },
       newName,
@@ -480,11 +395,15 @@ export class LSPClient {
 
   async stop(): Promise<void> {
     try {
-      this.notify("shutdown", {})
-      this.notify("exit")
+      if (this.connection) {
+        await this.connection.sendRequest("shutdown")
+        this.connection.sendNotification("exit")
+        this.connection.dispose()
+      }
     } catch {}
     this.proc?.kill()
     this.proc = null
+    this.connection = null
     this.processExited = true
     this.diagnosticsStore.clear()
   }

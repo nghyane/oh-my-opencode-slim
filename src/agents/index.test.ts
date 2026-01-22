@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createAgents, getAgentConfigs, getSubagentNames, getPrimaryAgentNames } from "./index";
+import { createAgents, getAgentConfigs, isSubagent } from "./index";
+import { SUBAGENT_NAMES } from "../config";
 import type { PluginConfig } from "../config";
 
 describe("agent alias backward compatibility", () => {
@@ -63,17 +64,83 @@ describe("agent alias backward compatibility", () => {
   });
 });
 
-describe("agent classification", () => {
-  test("getPrimaryAgentNames returns only orchestrator", () => {
-    const names = getPrimaryAgentNames();
-    expect(names).toEqual(["orchestrator"]);
+describe("fixer agent fallback", () => {
+  test("fixer inherits librarian model when no fixer config provided", () => {
+    const config: PluginConfig = {
+      agents: {
+        librarian: { model: "librarian-custom-model" },
+      },
+    };
+    const agents = createAgents(config);
+    const fixer = agents.find((a) => a.name === "fixer");
+    const librarian = agents.find((a) => a.name === "librarian");
+    expect(fixer!.config.model).toBe(librarian!.config.model);
   });
 
-  test("getSubagentNames excludes orchestrator", () => {
-    const names = getSubagentNames();
-    expect(names).not.toContain("orchestrator");
-    expect(names).toContain("explorer");
-    expect(names).toContain("fixer");
+  test("fixer uses its own model when explicitly configured", () => {
+    const config: PluginConfig = {
+      agents: {
+        librarian: { model: "librarian-model" },
+        fixer: { model: "fixer-specific-model" },
+      },
+    };
+    const agents = createAgents(config);
+    const fixer = agents.find((a) => a.name === "fixer");
+    expect(fixer!.config.model).toBe("fixer-specific-model");
+  });
+});
+
+describe("orchestrator agent", () => {
+  test("orchestrator is first in agents array", () => {
+    const agents = createAgents();
+    expect(agents[0].name).toBe("orchestrator");
+  });
+
+  test("orchestrator has question permission set to allow", () => {
+    const agents = createAgents();
+    const orchestrator = agents.find((a) => a.name === "orchestrator");
+    expect(orchestrator!.config.permission).toBeDefined();
+    expect((orchestrator!.config.permission as any).question).toBe("allow");
+  });
+
+  test("orchestrator accepts overrides", () => {
+    const config: PluginConfig = {
+      agents: {
+        orchestrator: { model: "custom-orchestrator-model", temperature: 0.3 },
+      },
+    };
+    const agents = createAgents(config);
+    const orchestrator = agents.find((a) => a.name === "orchestrator");
+    expect(orchestrator!.config.model).toBe("custom-orchestrator-model");
+    expect(orchestrator!.config.temperature).toBe(0.3);
+  });
+});
+
+describe("isSubagent type guard", () => {
+  test("returns true for valid subagent names", () => {
+    expect(isSubagent("explorer")).toBe(true);
+    expect(isSubagent("librarian")).toBe(true);
+    expect(isSubagent("oracle")).toBe(true);
+    expect(isSubagent("designer")).toBe(true);
+    expect(isSubagent("fixer")).toBe(true);
+  });
+
+  test("returns false for orchestrator", () => {
+    expect(isSubagent("orchestrator")).toBe(false);
+  });
+
+  test("returns false for invalid agent names", () => {
+    expect(isSubagent("invalid-agent")).toBe(false);
+    expect(isSubagent("")).toBe(false);
+    expect(isSubagent("explore")).toBe(false); // old alias, not actual agent name
+  });
+});
+
+describe("agent classification", () => {
+  test("SUBAGENT_NAMES excludes orchestrator", () => {
+    expect(SUBAGENT_NAMES).not.toContain("orchestrator");
+    expect(SUBAGENT_NAMES).toContain("explorer");
+    expect(SUBAGENT_NAMES).toContain("fixer");
   });
 
   test("getAgentConfigs applies correct classification visibility and mode", () => {
@@ -81,13 +148,10 @@ describe("agent classification", () => {
 
     // Primary agent
     expect(configs["orchestrator"].mode).toBe("primary");
-    expect(configs["orchestrator"].hidden).toBeFalsy();
 
     // Subagents
-    const subagents = getSubagentNames();
-    for (const name of subagents) {
+    for (const name of SUBAGENT_NAMES) {
       expect(configs[name].mode).toBe("subagent");
-      expect(configs[name].hidden).toBe(true);
     }
   });
 });
@@ -101,18 +165,12 @@ describe("createAgents", () => {
     expect(names).toContain("designer");
     expect(names).toContain("oracle");
     expect(names).toContain("librarian");
+    expect(names).toContain("fixer");
   });
 
-  test("respects disabled_agents", () => {
-    const config: PluginConfig = {
-      disabled_agents: ["explorer", "designer"],
-    };
-    const agents = createAgents(config);
-    const names = agents.map((a) => a.name);
-    expect(names).not.toContain("explorer");
-    expect(names).not.toContain("designer");
-    expect(names).toContain("orchestrator");
-    expect(names).toContain("oracle");
+  test("creates exactly 6 agents (1 primary + 5 subagents)", () => {
+    const agents = createAgents();
+    expect(agents.length).toBe(6);
   });
 });
 
@@ -122,5 +180,11 @@ describe("getAgentConfigs", () => {
     expect(configs["orchestrator"]).toBeDefined();
     expect(configs["explorer"]).toBeDefined();
     expect(configs["orchestrator"].model).toBeDefined();
+  });
+
+  test("includes description in SDK config", () => {
+    const configs = getAgentConfigs();
+    expect(configs["orchestrator"].description).toBeDefined();
+    expect(configs["explorer"].description).toBeDefined();
   });
 });

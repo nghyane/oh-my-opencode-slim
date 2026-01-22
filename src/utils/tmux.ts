@@ -1,5 +1,5 @@
 import { spawn } from "bun";
-import { log } from "../shared/logger";
+import { log } from "./logger";
 import type { TmuxConfig, TmuxLayout } from "../config/schema";
 
 let tmuxPath: string | null = null;
@@ -142,10 +142,10 @@ async function applyLayout(tmux: string, layout: TmuxLayout, mainPaneSize: numbe
 
     // For main-* layouts, set the main pane size
     if (layout === "main-horizontal" || layout === "main-vertical") {
-      const sizeOption = layout === "main-horizontal" 
-        ? "main-pane-height" 
+      const sizeOption = layout === "main-horizontal"
+        ? "main-pane-height"
         : "main-pane-width";
-      
+
       const sizeProc = spawn([tmux, "set-window-option", sizeOption, `${mainPaneSize}%`], {
         stdout: "pipe",
         stderr: "pipe",
@@ -325,6 +325,6 @@ export async function closeTmuxPane(paneId: string): Promise<boolean> {
  */
 export function startTmuxCheck(): void {
   if (!tmuxChecked) {
-    getTmuxPath().catch(() => {});
+    getTmuxPath().catch(() => { });
   }
 }

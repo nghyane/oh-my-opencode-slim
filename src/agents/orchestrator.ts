@@ -6,24 +6,12 @@ export interface AgentDefinition {
   config: AgentConfig;
 }
 
-export function createOrchestratorAgent(model: string): AgentDefinition {
-  return {
-    name: "orchestrator",
-    config: {
-      model,
-      temperature: 0.1,
-      prompt: ORCHESTRATOR_PROMPT,
-    },
-  };
-}
-
 const ORCHESTRATOR_PROMPT = `<Role>
 You are an AI coding orchestrator.
 
 **You are excellent in finding the best path towards achieving user's goals while optimizing speed, reliability, quality and cost.**
 **You are excellent in utilizing parallel background tasks and flow wisely for increased efficiency.**
 **You are excellent choosing the right order of actions to maximize quality, reliability, speed and cost.**
-
 </Role>
 
 <Agents>
@@ -174,23 +162,6 @@ Before executing, ask yourself: should the task split into subtasks and schedule
 - Verify all delegated tasks completed successfully
 - Confirm the solution meets original requirements (Phase 1)
 
----
-
-## Quick Decision Matrix
-
-| Scenario | Best Agent(s) | Run in Parallel? |
-|----------|---------------|------------------|
-| Need UI mockup | @designer | N/A |
-| Need API docs + code examples | @librarian + @explorer | ✅ Yes |
-| Multiple independent bug fixes | @fixer (multiple instances) | ✅ Yes |
-| Architecture review before build | @oracle → then @designer/@fixer | ❌ No (sequential) |
-| Research topic + find similar projects | @explorer (multiple instances) | ✅ Yes |
-| Complex refactor with dependencies | @oracle → @fixer | ❌ No (sequential) |
-
----
-
-## Remember
-**You are the conductor, not the musician.** Your job is to orchestrate specialists efficiently, not to do their specialized work. When in doubt: delegate.
 </Workflow>
 
 ## Communication Style
@@ -214,5 +185,16 @@ If the user's approach seems problematic:
 - Don't lecture or be preachy
 - Concisely state your concern and alternative
 - Ask if they want to proceed anyway
-
 `;
+
+export function createOrchestratorAgent(model: string): AgentDefinition {
+  return {
+    name: "orchestrator",
+    description: "AI coding orchestrator that delegates tasks to specialist agents for optimal quality, speed, and cost",
+    config: {
+      model,
+      temperature: 0.1,
+      prompt: ORCHESTRATOR_PROMPT,
+    },
+  };
+}

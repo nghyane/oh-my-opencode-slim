@@ -1,17 +1,5 @@
 import type { AgentDefinition } from "./orchestrator";
 
-export function createExplorerAgent(model: string): AgentDefinition {
-  return {
-    name: "explorer",
-    description: "Fast codebase search and pattern matching. Use for finding files, locating code patterns, and answering 'where is X?' questions.",
-    config: {
-      model,
-      temperature: 0.1,
-      prompt: EXPLORER_PROMPT,
-    },
-  };
-}
-
 const EXPLORER_PROMPT = `You are Explorer - a fast codebase navigation specialist.
 
 **Role**: Quick contextual grep for codebases. Answer "Where is X?", "Find Y", "Which file has Z".
@@ -50,3 +38,16 @@ Concise answer to the question
 - READ-ONLY: Search and report, don't modify
 - Be exhaustive but concise
 - Include line numbers when relevant`;
+
+export function createExplorerAgent(model: string): AgentDefinition {
+  return {
+    name: "explorer",
+    description: "Fast codebase search and pattern matching. Use for finding files, locating code patterns, and answering 'where is X?' questions.",
+    config: {
+      model,
+      temperature: 0.1,
+      prompt: EXPLORER_PROMPT,
+    },
+  };
+}
+

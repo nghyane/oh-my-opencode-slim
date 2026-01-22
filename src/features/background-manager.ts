@@ -1,9 +1,23 @@
+/**
+ * Background Task Manager
+ * 
+ * Manages long-running AI agent tasks that execute in separate sessions.
+ * Background tasks run independently from the main conversation flow, allowing
+ * the user to continue working while tasks complete asynchronously.
+ * 
+ * Key features:
+ * - Creates isolated sessions for background work
+ * - Polls task status until completion
+ * - Integrates with tmux for visual feedback (when enabled)
+ * - Supports task cancellation and result retrieval
+ */
+
 import type { PluginInput } from "@opencode-ai/plugin";
 import { POLL_INTERVAL_BACKGROUND_MS, POLL_INTERVAL_SLOW_MS } from "../config";
 import type { TmuxConfig } from "../config/schema";
 import type { PluginConfig } from "../config";
 import { applyAgentVariant, resolveAgentVariant } from "../utils";
-import { log } from "../shared/logger";
+import { log } from "../utils/logger";
 type PromptBody = {
   messageID?: string;
   model?: { providerID: string; modelID: string };
@@ -17,24 +31,31 @@ type PromptBody = {
 
 type OpencodeClient = PluginInput["client"];
 
+/**
+ * Represents a background task running in an isolated session.
+ * Tasks are tracked from creation through completion or failure.
+ */
 export interface BackgroundTask {
-  id: string;
-  sessionId: string;
-  description: string;
-  agent: string;
+  id: string;           // Unique task identifier (e.g., "bg_abc123")
+  sessionId: string;    // OpenCode session ID where the task runs
+  description: string;  // Human-readable task description
+  agent: string;        // Agent name handling the task
   status: "pending" | "running" | "completed" | "failed";
-  result?: string;
-  error?: string;
-  startedAt: Date;
-  completedAt?: Date;
+  result?: string;      // Final output from the agent (when completed)
+  error?: string;       // Error message (when failed)
+  startedAt: Date;      // Task creation timestamp
+  completedAt?: Date;   // Task completion/failure timestamp
 }
 
+/**
+ * Options for launching a new background task.
+ */
 export interface LaunchOptions {
-  agent: string;
-  prompt: string;
-  description: string;
-  parentSessionId: string;
-  model?: string;
+  agent: string;              // Agent to handle the task
+  prompt: string;             // Initial prompt to send to the agent
+  description: string;        // Human-readable task description
+  parentSessionId: string;    // Parent session ID for task hierarchy
+  model?: string;             // Optional model override
 }
 
 function generateTaskId(): string {
@@ -56,6 +77,16 @@ export class BackgroundTaskManager {
     this.config = config;
   }
 
+  /**
+   * Launch a new background task in an isolated session.
+   * 
+   * Creates a new session, registers the task, starts polling for completion,
+   * and sends the initial prompt to the specified agent.
+   * 
+   * @param opts - Task configuration options
+   * @returns The created background task object
+   * @throws Error if session creation fails
+   */
   async launch(opts: LaunchOptions): Promise<BackgroundTask> {
     const session = await this.client.session.create({
       body: {
@@ -100,16 +131,7 @@ export class BackgroundTaskManager {
       agent: opts.agent,
       tools: { background_task: false, task: false },
       parts: [{ type: "text" as const, text: opts.prompt }],
-    } as PromptBody) as unknown as {
-      messageID?: string;
-      model?: { providerID: string; modelID: string };
-      agent?: string;
-      noReply?: boolean;
-      system?: string;
-      tools?: { [key: string]: boolean };
-      parts: Array<{ type: "text"; text: string }>;
-      variant?: string;
-    };
+    } as PromptBody) as unknown as PromptBody;
 
 
     await this.client.session.prompt({
@@ -121,6 +143,14 @@ export class BackgroundTaskManager {
     return task;
   }
 
+  /**
+   * Retrieve the current state of a background task.
+   * 
+   * @param taskId - The task ID to retrieve
+   * @param block - If true, wait for task completion before returning
+   * @param timeout - Maximum time to wait in milliseconds (default: 2 minutes)
+   * @returns The task object, or null if not found
+   */
   async getResult(taskId: string, block = false, timeout = 120000): Promise<BackgroundTask | null> {
     const task = this.tasks.get(taskId);
     if (!task) return null;
@@ -132,8 +162,7 @@ export class BackgroundTaskManager {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       await this.pollTask(task);
-      const status = task.status as string;
-      if (status === "completed" || status === "failed") {
+      if ((task.status as string) === "completed" || (task.status as string) === "failed") {
         return task;
       }
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_SLOW_MS));
@@ -142,6 +171,12 @@ export class BackgroundTaskManager {
     return task;
   }
 
+  /**
+   * Cancel one or all running background tasks.
+   * 
+   * @param taskId - Optional task ID to cancel. If omitted, cancels all running tasks.
+   * @returns Number of tasks cancelled
+   */
   cancel(taskId?: string): number {
     if (taskId) {
       const task = this.tasks.get(taskId);
@@ -166,11 +201,19 @@ export class BackgroundTaskManager {
     return count;
   }
 
+  /**
+   * Start the polling interval to check task status.
+   * Only starts if not already polling.
+   */
   private startPolling() {
     if (this.pollInterval) return;
     this.pollInterval = setInterval(() => this.pollAllTasks(), POLL_INTERVAL_BACKGROUND_MS);
   }
 
+  /**
+   * Poll all running tasks for status updates.
+   * Stops polling automatically when no tasks are running.
+   */
   private async pollAllTasks() {
     const runningTasks = [...this.tasks.values()].filter((t) => t.status === "running");
     if (runningTasks.length === 0 && this.pollInterval) {
@@ -184,6 +227,12 @@ export class BackgroundTaskManager {
     }
   }
 
+  /**
+   * Poll a single task for completion.
+   * 
+   * Checks if the session is idle, then retrieves assistant messages.
+   * Updates task status to completed/failed based on the response.
+   */
   private async pollTask(task: BackgroundTask) {
     try {
       // Check session status first
@@ -192,13 +241,13 @@ export class BackgroundTaskManager {
       const sessionStatus = allStatuses[task.sessionId];
 
       // If session is still active (not idle), don't try to read messages yet
-      if (sessionStatus && sessionStatus.type !== "idle") {
+      if (task.status !== "running" || (sessionStatus && sessionStatus.type !== "idle")) {
         return;
       }
 
       // Get messages using correct API
       const messagesResult = await this.client.session.messages({ path: { id: task.sessionId } });
-      const messages = (messagesResult.data ?? messagesResult) as Array<{ info?: { role: string }; parts?: Array<{ type: string; text?: string }> }>;
+      const messages = (messagesResult.data ?? []) as Array<{ info?: { role: string }; parts?: Array<{ type: string; text?: string }> }>;
       const assistantMessages = messages.filter((m) => m.info?.role === "assistant");
 
       if (assistantMessages.length === 0) {

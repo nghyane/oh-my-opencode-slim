@@ -18,7 +18,7 @@ import { loadPluginConfig, type TmuxConfig } from "./config";
 import { createBuiltinMcps } from "./mcp";
 import { createAutoUpdateCheckerHook, createPhaseReminderHook, createPostReadNudgeHook } from "./hooks";
 import { startTmuxCheck } from "./utils";
-import { log } from "./shared/logger";
+import { log } from "./utils/logger";
 
 const OhMyOpenCodeLite: Plugin = async (ctx) => {
   const config = loadPluginConfig(ctx.directory);
@@ -31,10 +31,10 @@ const OhMyOpenCodeLite: Plugin = async (ctx) => {
     main_pane_size: config.tmux?.main_pane_size ?? 60,
   };
 
-  log("[plugin] initialized with tmux config", { 
-    tmuxConfig, 
+  log("[plugin] initialized with tmux config", {
+    tmuxConfig,
     rawTmuxConfig: config.tmux,
-    directory: ctx.directory 
+    directory: ctx.directory
   });
 
   // Start background tmux check if enabled
@@ -105,7 +105,7 @@ const OhMyOpenCodeLite: Plugin = async (ctx) => {
     event: async (input) => {
       // Handle auto-update checking
       await autoUpdateChecker.event(input);
-      
+
       // Handle tmux pane spawning for OpenCode's Task tool sessions
       await tmuxSessionManager.onSessionCreated(input.event as {
         type: string;

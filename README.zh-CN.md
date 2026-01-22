@@ -542,7 +542,6 @@ bunx oh-my-opencode-slim install --help
 | `tmux.enabled` | boolean | `false` | 是否启用子代理的 tmux 窗格 |
 | `tmux.layout` | string | `"main-vertical"` | 布局预设：`main-vertical`、`main-horizontal`、`tiled`、`even-horizontal`、`even-vertical` |
 | `tmux.main_pane_size` | number | `60` | 主窗格大小百分比（20-80） |
-| `disabled_agents` | string[] | `[]` | 要禁用的代理 ID（如 `"explorer"`） |
 | `disabled_mcps` | string[] | `[]` | 要禁用的 MCP 服务器 ID（如 `"websearch"`） |
 | `agents.<name>.model` | string |  -  | 覆盖特定代理的模型 |
 | `agents.<name>.variant` | string |  -  | 推理强度：`"low"`、`"medium"`、`"high"` |

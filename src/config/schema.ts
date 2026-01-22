@@ -4,10 +4,7 @@ import { z } from "zod";
 export const AgentOverrideConfigSchema = z.object({
   model: z.string().optional(),
   temperature: z.number().min(0).max(2).optional(),
-  prompt: z.string().optional(),
-  prompt_append: z.string().optional(),
   variant: z.string().optional().catch(undefined),
-  disable: z.boolean().optional(),
   skills: z.array(z.string()).optional(), // skills this agent can use ("*" = all)
 });
 
@@ -40,27 +37,11 @@ export type McpName = z.infer<typeof McpNameSchema>;
 // Main plugin config
 export const PluginConfigSchema = z.object({
   agents: z.record(z.string(), AgentOverrideConfigSchema).optional(),
-  disabled_agents: z.array(z.string()).optional(),
   disabled_mcps: z.array(z.string()).optional(),
   tmux: TmuxConfigSchema.optional(),
 });
 
 export type PluginConfig = z.infer<typeof PluginConfigSchema>;
 
-// Agent names
-export type AgentName =
-  | "orchestrator"
-  | "oracle"
-  | "librarian"
-  | "explorer"
-  | "designer"
-  | "fixer";
-
-export const DEFAULT_MODELS: Record<AgentName, string> = {
-  orchestrator: "google/claude-opus-4-5-thinking",
-  oracle: "openai/gpt-5.2-codex",
-  librarian: "google/gemini-3-flash",
-  explorer: "google/gemini-3-flash",
-  designer: "google/gemini-3-flash",
-  fixer: "google/gemini-3-flash",
-};
+// Agent names - re-exported from constants for convenience
+export type { AgentName } from "./constants";

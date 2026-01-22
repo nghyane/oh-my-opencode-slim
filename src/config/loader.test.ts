@@ -39,7 +39,6 @@ describe("loadPluginConfig", () => {
     fs.writeFileSync(
       path.join(projectConfigDir, "oh-my-opencode-slim.json"),
       JSON.stringify({
-        disabled_agents: ["explorer"],
         agents: {
           oracle: { model: "test/model" },
         },
@@ -47,7 +46,6 @@ describe("loadPluginConfig", () => {
     )
 
     const config = loadPluginConfig(projectDir)
-    expect(config.disabled_agents).toEqual(["explorer"])
     expect(config.agents?.oracle?.model).toBe("test/model")
   })
 
@@ -55,7 +53,7 @@ describe("loadPluginConfig", () => {
     const projectDir = path.join(tempDir, "project")
     const projectConfigDir = path.join(projectDir, ".opencode")
     fs.mkdirSync(projectConfigDir, { recursive: true })
-    
+
     // Test 1: Invalid temperature (out of range)
     fs.writeFileSync(
       path.join(projectConfigDir, "oh-my-opencode-slim.json"),
@@ -81,7 +79,7 @@ describe("deepMerge behavior", () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "merge-test-"))
     userConfigDir = path.join(tempDir, "user-config")
     originalEnv = { ...process.env }
-    
+
     // Set XDG_CONFIG_HOME to control user config location
     process.env.XDG_CONFIG_HOME = userConfigDir
   })
@@ -120,14 +118,14 @@ describe("deepMerge behavior", () => {
     )
 
     const config = loadPluginConfig(projectDir)
-    
+
     // oracle: model from user, temperature from project
     expect(config.agents?.oracle?.model).toBe("user/oracle-model")
     expect(config.agents?.oracle?.temperature).toBe(0.8)
-    
+
     // explorer: from user only
     expect(config.agents?.explorer?.model).toBe("user/explorer-model")
-    
+
     // designer: from project only
     expect(config.agents?.designer?.model).toBe("project/designer-model")
   })
@@ -160,7 +158,7 @@ describe("deepMerge behavior", () => {
     )
 
     const config = loadPluginConfig(projectDir)
-    
+
     expect(config.tmux?.enabled).toBe(false) // From project (override)
     expect(config.tmux?.layout).toBe("tiled") // From project
     expect(config.tmux?.main_pane_size).toBe(60) // From user (preserved)
@@ -190,36 +188,12 @@ describe("deepMerge behavior", () => {
     )
 
     const config = loadPluginConfig(projectDir)
-    
+
     expect(config.tmux?.enabled).toBe(true) // Preserved from user
     expect(config.tmux?.layout).toBe("main-vertical") // Preserved from user
   })
 
-  test("deduplicates disabled_agents arrays", () => {
-    const userOpencodeDir = path.join(userConfigDir, "opencode")
-    fs.mkdirSync(userOpencodeDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(userOpencodeDir, "oh-my-opencode-slim.json"),
-      JSON.stringify({
-        disabled_agents: ["explorer", "oracle"],
-      })
-    )
 
-    const projectDir = path.join(tempDir, "project")
-    const projectConfigDir = path.join(projectDir, ".opencode")
-    fs.mkdirSync(projectConfigDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(projectConfigDir, "oh-my-opencode-slim.json"),
-      JSON.stringify({
-        disabled_agents: ["oracle", "designer"], // oracle duplicated
-      })
-    )
-
-    const config = loadPluginConfig(projectDir)
-    
-    // Should be deduplicated
-    expect(config.disabled_agents?.sort()).toEqual(["designer", "explorer", "oracle"])
-  })
 
   test("project config overrides top-level arrays", () => {
     const userOpencodeDir = path.join(userConfigDir, "opencode")
@@ -242,7 +216,7 @@ describe("deepMerge behavior", () => {
     )
 
     const config = loadPluginConfig(projectDir)
-    
+
     // disabled_mcps should be from project (overwrites, not merges)
     expect(config.disabled_mcps).toEqual(["context7"])
   })

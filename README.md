@@ -525,7 +525,6 @@ The installer generates this file based on your providers. You can manually cust
 | `tmux.enabled` | boolean | `false` | Enable tmux pane spawning for sub-agents |
 | `tmux.layout` | string | `"main-vertical"` | Layout preset: `main-vertical`, `main-horizontal`, `tiled`, `even-horizontal`, `even-vertical` |
 | `tmux.main_pane_size` | number | `60` | Main pane size as percentage (20-80) |
-| `disabled_agents` | string[] | `[]` | Agent IDs to disable (e.g., `"explorer"`) |
 | `disabled_mcps` | string[] | `[]` | MCP server IDs to disable (e.g., `"websearch"`) |
 | `agents.<name>.model` | string |  -  | Override the LLM for a specific agent |
 | `agents.<name>.variant` | string |  -  | Reasoning effort: `"low"`, `"medium"`, `"high"` |

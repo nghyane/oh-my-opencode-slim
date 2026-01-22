@@ -1,7 +1,8 @@
 import type { PluginInput } from "@opencode-ai/plugin";
 import { spawnTmuxPane, closeTmuxPane, isInsideTmux } from "../utils/tmux";
 import type { TmuxConfig } from "../config/schema";
-import { log } from "../shared/logger";
+import { log } from "../utils/logger";
+import { POLL_INTERVAL_BACKGROUND_MS } from "../config";
 
 type OpencodeClient = PluginInput["client"];
 
@@ -11,10 +12,20 @@ interface TrackedSession {
   parentId: string;
   title: string;
   createdAt: number;
+  lastSeenAt: number;
+  missingSince?: number;
 }
 
-const POLL_INTERVAL_MS = 2000;
+/**
+ * Event shape for session creation hooks
+ */
+interface SessionCreatedEvent {
+  type: string;
+  properties?: { info?: { id?: string; parentID?: string; title?: string } };
+}
+
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const SESSION_MISSING_GRACE_MS = POLL_INTERVAL_BACKGROUND_MS * 3;
 
 /**
  * TmuxSessionManager tracks child sessions (created by OpenCode's Task tool)
@@ -85,12 +96,14 @@ export class TmuxSessionManager {
     });
 
     if (paneResult.success && paneResult.paneId) {
+      const now = Date.now();
       this.sessions.set(sessionId, {
         sessionId,
         paneId: paneResult.paneId,
         parentId,
         title,
-        createdAt: Date.now(),
+        createdAt: now,
+        lastSeenAt: now,
       });
 
       log("[tmux-session-manager] pane spawned", {
@@ -105,7 +118,7 @@ export class TmuxSessionManager {
   private startPolling(): void {
     if (this.pollInterval) return;
 
-    this.pollInterval = setInterval(() => this.pollSessions(), POLL_INTERVAL_MS);
+    this.pollInterval = setInterval(() => this.pollSessions(), POLL_INTERVAL_BACKGROUND_MS);
     log("[tmux-session-manager] polling started");
   }
 
@@ -133,13 +146,23 @@ export class TmuxSessionManager {
       for (const [sessionId, tracked] of this.sessions.entries()) {
         const status = allStatuses[sessionId];
 
-        // Session is idle (completed) or not found (deleted)
-        const isIdle = !status || status.type === "idle";
+        // Session is idle (completed).
+        const isIdle = status?.type === "idle";
 
-        // Check for timeout
+        if (status) {
+          tracked.lastSeenAt = now;
+          tracked.missingSince = undefined;
+        } else if (!tracked.missingSince) {
+          tracked.missingSince = now;
+        }
+
+        const missingTooLong = !!tracked.missingSince
+          && now - tracked.missingSince >= SESSION_MISSING_GRACE_MS;
+
+        // Check for timeout as a safety fallback
         const isTimedOut = now - tracked.createdAt > SESSION_TIMEOUT_MS;
 
-        if (isIdle || isTimedOut) {
+        if (isIdle || missingTooLong || isTimedOut) {
           sessionsToClose.push(sessionId);
         }
       }
@@ -174,10 +197,7 @@ export class TmuxSessionManager {
    */
   createEventHandler(): (input: { event: { type: string; properties?: unknown } }) => Promise<void> {
     return async (input) => {
-      await this.onSessionCreated(input.event as {
-        type: string;
-        properties?: { info?: { id?: string; parentID?: string; title?: string } };
-      });
+      await this.onSessionCreated(input.event as SessionCreatedEvent);
     };
   }
 
@@ -187,11 +207,17 @@ export class TmuxSessionManager {
   async cleanup(): Promise<void> {
     this.stopPolling();
 
-    for (const tracked of this.sessions.values()) {
-      await closeTmuxPane(tracked.paneId);
+    if (this.sessions.size > 0) {
+      log("[tmux-session-manager] closing all panes", { count: this.sessions.size });
+      const closePromises = Array.from(this.sessions.values()).map(s =>
+        closeTmuxPane(s.paneId).catch(err =>
+          log("[tmux-session-manager] cleanup error for pane", { paneId: s.paneId, error: String(err) })
+        )
+      );
+      await Promise.all(closePromises);
+      this.sessions.clear();
     }
 
-    this.sessions.clear();
     log("[tmux-session-manager] cleanup complete");
   }
 }

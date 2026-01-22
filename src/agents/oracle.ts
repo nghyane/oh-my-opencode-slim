@@ -1,17 +1,5 @@
 import type { AgentDefinition } from "./orchestrator";
 
-export function createOracleAgent(model: string): AgentDefinition {
-  return {
-    name: "oracle",
-    description: "Strategic technical advisor. Use for architecture decisions, complex debugging, code review, and engineering guidance.",
-    config: {
-      model,
-      temperature: 0.1,
-      prompt: ORACLE_PROMPT,
-    },
-  };
-}
-
 const ORACLE_PROMPT = `You are Oracle - a strategic technical advisor.
 
 **Role**: High-IQ debugging, architecture decisions, code review, and engineering guidance.
@@ -32,3 +20,16 @@ const ORACLE_PROMPT = `You are Oracle - a strategic technical advisor.
 - READ-ONLY: You advise, you don't implement
 - Focus on strategy, not execution
 - Point to specific files/lines when relevant`;
+
+export function createOracleAgent(model: string): AgentDefinition {
+  return {
+    name: "oracle",
+    description: "Strategic technical advisor. Use for architecture decisions, complex debugging, code review, and engineering guidance.",
+    config: {
+      model,
+      temperature: 0.1,
+      prompt: ORACLE_PROMPT,
+    },
+  };
+}
+

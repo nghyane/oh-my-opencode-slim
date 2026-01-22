@@ -1,17 +1,5 @@
 import type { AgentDefinition } from "./orchestrator";
 
-export function createFixerAgent(model: string): AgentDefinition {
-  return {
-    name: "fixer",
-    description: "Fast implementation specialist. Receives complete context and task spec, executes code changes efficiently.",
-    config: {
-      model,
-      temperature: 0.2,
-      prompt: FIXER_PROMPT,
-    },
-  };
-}
-
 const FIXER_PROMPT = `You are Fixer - a fast, focused implementation specialist.
 
 **Role**: Execute code changes efficiently. You receive complete context from research agents and clear task specifications from the Orchestrator. Your job is to implement, not plan or research.
@@ -51,3 +39,15 @@ No changes required
 - Tests passed: [not run - reason]
 - LSP diagnostics: [not run - reason]
 </verification>`;
+
+export function createFixerAgent(model: string): AgentDefinition {
+  return {
+    name: "fixer",
+    description: "Fast implementation specialist. Receives complete context and task spec, executes code changes efficiently.",
+    config: {
+      model,
+      temperature: 0.2,
+      prompt: FIXER_PROMPT,
+    },
+  };
+}

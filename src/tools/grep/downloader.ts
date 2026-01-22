@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, chmodSync, unlinkSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { spawn } from "bun"
-import { extractZip } from "../../shared"
+import { extractZip } from "../../utils"
 
 export function findFileRecursive(dir: string, filename: string): string | null {
   try {
@@ -21,13 +21,13 @@ const RG_VERSION = "14.1.1"
 
 // Platform key format: ${process.platform}-${process.arch} (consistent with ast-grep)
 const PLATFORM_CONFIG: Record<string, { platform: string; extension: "tar.gz" | "zip" } | undefined> =
-  {
-    "darwin-arm64": { platform: "aarch64-apple-darwin", extension: "tar.gz" },
-    "darwin-x64": { platform: "x86_64-apple-darwin", extension: "tar.gz" },
-    "linux-arm64": { platform: "aarch64-unknown-linux-gnu", extension: "tar.gz" },
-    "linux-x64": { platform: "x86_64-unknown-linux-musl", extension: "tar.gz" },
-    "win32-x64": { platform: "x86_64-pc-windows-msvc", extension: "zip" },
-  }
+{
+  "darwin-arm64": { platform: "aarch64-apple-darwin", extension: "tar.gz" },
+  "darwin-x64": { platform: "x86_64-apple-darwin", extension: "tar.gz" },
+  "linux-arm64": { platform: "aarch64-unknown-linux-gnu", extension: "tar.gz" },
+  "linux-x64": { platform: "x86_64-unknown-linux-musl", extension: "tar.gz" },
+  "win32-x64": { platform: "x86_64-pc-windows-msvc", extension: "zip" },
+}
 
 function getPlatformKey(): string {
   return `${process.platform}-${process.arch}`
