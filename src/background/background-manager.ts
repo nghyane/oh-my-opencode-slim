@@ -13,6 +13,7 @@
  * - Supports task cancellation and result retrieval
  * - Atomic state transitions with versioning
  * - Centralized resource lifecycle management
+ * - Saga pattern for task finalization
  */
 
 import { randomUUID } from 'node:crypto';
@@ -28,9 +29,27 @@ import {
 import type { TmuxConfig } from '../config/schema';
 import { applyAgentVariant, resolveAgentVariant } from '../utils';
 import { log } from '../utils/logger';
+import { globalConcurrencyManager } from './concurrency/concurrency-manager.js';
+import { LockFreeTaskOperations } from './concurrency/lock-free-ops';
+// New architecture modules
+import { TaskMetricsCollector } from './metrics/collector';
+import { globalNotificationService } from './notifications/notification-service';
+import { globalResourceManager } from './resources/resource-manager';
+import {
+  SagaOrchestrator,
+  TaskFinalizationSaga,
+} from './sagas/task-finalization-saga';
+import {
+  type AtomicStateMachine,
+  globalEventBus,
+  globalStateMachine,
+} from './state-machine';
 import type { TmuxSessionManager } from './tmux-session-manager';
 
 type OpencodeClient = PluginInput['client'];
+
+// Read-only agents that cannot spawn background tasks
+const READONLY_AGENTS = ['explore', 'librarian'];
 
 /**
  * Prompt body interface for agent execution.
@@ -75,6 +94,7 @@ export interface BackgroundTask {
   isResultTruncated?: boolean; // Whether result was truncated due to size limit
   config: BackgroundTaskConfig; // Task configuration
   parentSessionId: string; // Parent session ID for notifications
+  model: string; // Model identifier for concurrency control
   startedAt: Date; // Task creation timestamp
   completedAt?: Date; // Task completion/failure timestamp
   prompt: string; // Initial prompt
@@ -88,6 +108,7 @@ export interface LaunchOptions {
   prompt: string; // Initial prompt to send to the agent
   description: string; // Human-readable task description
   parentSessionId: string; // Parent session ID for task hierarchy
+  model?: string; // Model identifier for concurrency control
 }
 
 /**
@@ -97,93 +118,6 @@ export type TaskOutcome =
   | { status: 'completed'; result: string }
   | { status: 'failed'; error: string; result?: string }
   | { status: 'cancelled'; result?: string };
-
-/**
- * Tracks a notification that failed to send and is pending retry.
- */
-interface PendingNotification {
-  taskId: string;
-  sessionId: string;
-  message: string;
-  attempts: number;
-  timerId?: ReturnType<typeof setTimeout>;
-}
-
-/**
- * Disposable resource interface for cleanup registry.
- */
-interface Disposable {
-  dispose(): void;
-}
-
-/**
- * Centralized resource registry for task lifecycle management.
- * Ensures all resources (timers, resolvers, mappings) are properly cleaned up.
- */
-class TaskResourceRegistry {
-  private resources = new Map<string, Set<Disposable>>();
-
-  register(taskId: string, resource: Disposable): void {
-    const set = this.resources.get(taskId) ?? new Set();
-    set.add(resource);
-    this.resources.set(taskId, set);
-  }
-
-  cleanup(taskId: string): void {
-    const set = this.resources.get(taskId);
-    if (set) {
-      for (const resource of set) {
-        try {
-          resource.dispose();
-        } catch (err) {
-          log('[task-resource-registry] dispose error', {
-            taskId,
-            error: String(err),
-          });
-        }
-      }
-      this.resources.delete(taskId);
-    }
-  }
-
-  cleanupAll(): void {
-    for (const [taskId] of this.resources) {
-      this.cleanup(taskId);
-    }
-  }
-}
-
-/**
- * Timer wrapper that implements Disposable.
- */
-class TimerDisposable implements Disposable {
-  constructor(private timerId: ReturnType<typeof setTimeout> | undefined) {}
-
-  dispose(): void {
-    if (this.timerId) {
-      clearTimeout(this.timerId);
-      this.timerId = undefined;
-    }
-  }
-}
-
-/**
- * Resolver wrapper that implements Disposable.
- */
-class ResolverDisposable implements Disposable {
-  constructor(
-    private taskId: string,
-    private resolvers: Map<string, (task: BackgroundTask | null) => void>,
-  ) {}
-
-  dispose(): void {
-    const resolver = this.resolvers.get(this.taskId);
-    if (resolver) {
-      resolver(null);
-      this.resolvers.delete(this.taskId);
-    }
-  }
-}
 
 function generateTaskId(): string {
   return `bg_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
@@ -229,17 +163,6 @@ export class BackgroundTaskManager {
   private queueLock = false;
   private pendingQueueProcess = false;
 
-  // Completion waiting
-  private completionResolvers = new Map<
-    string,
-    (task: BackgroundTask | null) => void
-  >();
-
-  // Notification retry
-  private pendingNotifications = new Map<string, PendingNotification>();
-  private readonly maxNotificationRetries = 3;
-  private readonly notificationRetryDelays = [1000, 2000, 4000]; // ms
-
   // Orphaned task detection
   private orphanedSweepTimer?: ReturnType<typeof setInterval>;
 
@@ -247,11 +170,14 @@ export class BackgroundTaskManager {
   private pendingIdleTasks = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleDebounceMs = 500;
 
-  // Resource registry for centralized cleanup
-  private resourceRegistry = new TaskResourceRegistry();
-
   // Finalization lock to prevent concurrent finalization
   private finalizingTasks = new Set<string>();
+
+  // New architecture components
+  private lockFreeOps!: LockFreeTaskOperations;
+  private sagaOrchestrator!: SagaOrchestrator;
+  private metrics!: TaskMetricsCollector;
+  private stateMachine: AtomicStateMachine;
 
   constructor(
     ctx: PluginInput,
@@ -271,6 +197,17 @@ export class BackgroundTaskManager {
     this.maxCompletedTasks = this.taskConfig.maxCompletedTasks ?? 100;
     this.tmuxManager = tmuxManager;
 
+    // Use global state machine instance
+    this.stateMachine = globalStateMachine;
+
+    // Initialize new architecture components
+    this.lockFreeOps = new LockFreeTaskOperations(this.tasks);
+    this.sagaOrchestrator = new SagaOrchestrator();
+    this.metrics = new TaskMetricsCollector(globalEventBus);
+
+    // Wire up notification service
+    globalNotificationService.setSendFunction(this.sendNotification.bind(this));
+
     // Orphan detection sweep every 60 seconds
     this.orphanedSweepTimer = setInterval(
       () => this.checkOrphanedSessions(),
@@ -282,6 +219,23 @@ export class BackgroundTaskManager {
     process.once('exit', onExit);
     process.once('SIGINT', onExit);
     process.once('SIGTERM', onExit);
+  }
+
+  /**
+   * Send notification to a session (used by NotificationService).
+   */
+  private async sendNotification(
+    sessionId: string,
+    message: unknown,
+  ): Promise<void> {
+    const model = await this.getSessionModel(sessionId);
+    await this.client.session.prompt({
+      path: { id: sessionId },
+      body: {
+        model,
+        parts: [{ type: 'text' as const, text: message as string }],
+      },
+    });
   }
 
   /**
@@ -307,15 +261,6 @@ export class BackgroundTaskManager {
     task.stateVersion = currentVersion + 1;
 
     return true;
-  }
-
-  /**
-   * Check if a task status is terminal (no more transitions allowed).
-   */
-  private isTerminal(status: BackgroundTask['status']): boolean {
-    return (
-      status === 'completed' || status === 'failed' || status === 'cancelled'
-    );
   }
 
   /**
@@ -395,6 +340,73 @@ export class BackgroundTaskManager {
   }
 
   /**
+   * Validate session output to ensure task produced meaningful results.
+   * Prevents false positives from tasks that complete without doing any work.
+   */
+  private async validateSessionOutput(
+    sessionId: string,
+    _task: BackgroundTask,
+  ): Promise<{ valid: boolean; reason?: string }> {
+    try {
+      const response = await this.client.session.messages({
+        path: { id: sessionId },
+        query: { directory: this.directory },
+      });
+
+      const messages = (response.data ?? []) as Array<{
+        info?: { role: string };
+        parts?: Array<{ type: string; text?: string }>;
+      }>;
+
+      // Check for assistant messages with meaningful content
+      const hasAssistantMessage = messages.some(
+        (m) => m.info?.role === 'assistant',
+      );
+
+      const hasContent = messages.some((m) => {
+        if (m.info?.role !== 'assistant') return false;
+        for (const part of m.parts ?? []) {
+          if (
+            (part.type === 'text' || part.type === 'reasoning') &&
+            part.text &&
+            part.text.trim().length > 0
+          ) {
+            return true;
+          }
+        }
+        return false;
+      });
+
+      // If no assistant messages or no content, fail immediately
+      if (!hasAssistantMessage) {
+        return { valid: false, reason: 'No assistant messages found' };
+      }
+
+      if (!hasContent) {
+        return { valid: false, reason: 'No meaningful content' };
+      }
+
+      return { valid: true };
+    } catch (error) {
+      console.warn(
+        `[BackgroundManager] Could not validate session ${sessionId}:`,
+        error,
+      );
+      return { valid: true };
+    }
+  }
+
+  /**
+   * Check if task has incomplete todos (blocks completion).
+   * Placeholder for future todo system integration.
+   */
+  private hasIncompleteTodos(_task: BackgroundTask): boolean {
+    // This would integrate with todo system if available
+    // For now, placeholder - can be enhanced later
+    return false;
+  }
+
+  /**
    * Launch a new background task (fire-and-forget).
    *
    * Phase A (sync): Creates task record and returns immediately.
@@ -408,6 +420,24 @@ export class BackgroundTaskManager {
     if (!isSubagent(opts.agent)) {
       throw new Error(
         `Invalid agent "${opts.agent}". Valid agents: ${SUBAGENT_NAMES.join(', ')}`,
+      );
+    }
+
+    // BLOCK: Prevent read-only agents from spawning background tasks
+    if (READONLY_AGENTS.includes(opts.agent)) {
+      throw new Error(
+        `Agent "${opts.agent}" is a read-only research agent and cannot spawn background tasks. ` +
+          'Use parallel tool calls or regular async operations instead.',
+      );
+    }
+
+    // BLOCK: Prevent nested background tasks
+    // A background task cannot spawn another background task
+    if (this.isBackgroundTaskSession(opts.parentSessionId)) {
+      throw new Error(
+        `Cannot create nested background task: session ${opts.parentSessionId} ` +
+          'is already running a background task. Background tasks cannot spawn ' +
+          'other background tasks. Use parallel tool calls or regular async operations instead.',
       );
     }
 
@@ -425,6 +455,7 @@ export class BackgroundTaskManager {
         maxCompletedTasks: this.maxCompletedTasks,
       },
       parentSessionId: opts.parentSessionId,
+      model: opts.model ?? 'default',
       prompt: opts.prompt,
     };
 
@@ -435,6 +466,17 @@ export class BackgroundTaskManager {
       this.tasksByParentSession.get(opts.parentSessionId) ?? new Set();
     parentTasks.add(task.id);
     this.tasksByParentSession.set(opts.parentSessionId, parentTasks);
+
+    // Emit task created event
+    globalEventBus.emit({
+      type: 'task.created',
+      taskId: task.id,
+      timestamp: new Date(),
+      version: 0,
+      agent: opts.agent,
+      description: opts.description,
+      parentSessionId: opts.parentSessionId,
+    });
 
     // Queue task for background start
     this.enqueueStart(task);
@@ -453,6 +495,7 @@ export class BackgroundTaskManager {
   private enqueueStart(task: BackgroundTask): void {
     this.startQueue.push(task);
     this.startQueueSet.add(task.id);
+    this.metrics.updateQueueSize(this.startQueue.length);
     this.processQueue();
   }
 
@@ -477,6 +520,7 @@ export class BackgroundTaskManager {
         if (!task) break;
 
         this.startQueueSet.delete(task.id);
+        this.metrics.updateQueueSize(this.startQueue.length);
 
         if (!this.isTaskStartable(task)) continue;
 
@@ -522,6 +566,9 @@ export class BackgroundTaskManager {
       return;
     }
 
+    // Acquire concurrency slot for the model
+    await globalConcurrencyManager.acquire(task.model);
+
     let sessionId: string | undefined;
 
     try {
@@ -540,9 +587,20 @@ export class BackgroundTaskManager {
         throw new Error('Failed to create background session');
       }
 
-      // Phase 2: Commit or rollback
-      if (this.tryTransition(task, 'running')) {
+      // Phase 2: Commit or rollback using state machine
+      const result = await this.stateMachine.transition(task, 'running');
+
+      if (result.success) {
         this.commitSessionMapping(task, sessionId);
+
+        // Emit task started event
+        globalEventBus.emit({
+          type: 'task.started',
+          taskId: task.id,
+          timestamp: new Date(),
+          version: task.stateVersion,
+          sessionId,
+        });
       } else {
         await this.rollbackSessionCreation(sessionId);
         throw new Error('Task cancelled during startup');
@@ -626,7 +684,10 @@ export class BackgroundTaskManager {
    */
   private async rollbackSessionCreation(sessionId: string): Promise<void> {
     try {
-      await this.client.session.delete({ path: { id: sessionId } });
+      await this.client.session.delete({
+        path: { id: sessionId },
+        query: { directory: this.directory },
+      });
     } catch (err) {
       log('[background-manager] Failed to rollback session:', err);
     }
@@ -672,9 +733,6 @@ export class BackgroundTaskManager {
       }, this.idleDebounceMs);
 
       this.pendingIdleTasks.set(taskId, timer);
-
-      // Register timer for cleanup
-      this.resourceRegistry.register(taskId, new TimerDisposable(timer));
     } else if (event.properties?.status?.type === 'busy') {
       // Cancel pending idle if session becomes busy again (agent is still working)
       const timer = this.pendingIdleTasks.get(taskId);
@@ -728,6 +786,37 @@ export class BackgroundTaskManager {
         .join('\n\n');
 
       const result = responseText || '(No output)';
+
+      // Validate output before marking as complete
+      const validation = await this.validateSessionOutput(task.sessionId, task);
+      if (!validation.valid) {
+        log('[background-manager] Task validation failed:', {
+          taskId: task.id,
+          reason: validation.reason,
+        });
+        // Mark as failed instead of completed
+        this.finalizeTask(task, {
+          status: 'failed',
+          error: `Validation failed: ${validation.reason}`,
+          result,
+        });
+        return;
+      }
+
+      // Check for incomplete todos
+      if (this.hasIncompleteTodos(task)) {
+        log('[background-manager] Task has incomplete todos:', {
+          taskId: task.id,
+        });
+        // Mark as failed if there are incomplete todos
+        this.finalizeTask(task, {
+          status: 'failed',
+          error: 'Task has incomplete todos',
+          result,
+        });
+        return;
+      }
+
       this.finalizeTask(task, { status: 'completed', result });
     } catch (error) {
       const lastMessage = await this.extractLastAssistantMessage(
@@ -742,7 +831,7 @@ export class BackgroundTaskManager {
   }
 
   /**
-   * Finalize a task with a typed outcome and notify waiting callers.
+   * Finalize a task with a typed outcome using saga pattern.
    * Uses compare-and-swap pattern to ensure atomic finalization.
    */
   private finalizeTask(task: BackgroundTask, outcome: TaskOutcome): void {
@@ -752,233 +841,165 @@ export class BackgroundTaskManager {
     }
     this.finalizingTasks.add(task.id);
 
-    try {
-      // Check if already finalized (completed or failed)
-      if (task.status === 'completed' || task.status === 'failed') {
-        return;
-      }
-
-      // If already cancelled and outcome is also cancelled, just ensure completedAt is set
-      if (task.status === 'cancelled' && outcome.status === 'cancelled') {
-        if (!task.completedAt) {
-          task.completedAt = new Date();
-        }
-        return;
-      }
-
-      // Try to transition to the outcome status
-      if (!this.tryTransition(task, outcome.status)) {
-        return;
-      }
-
-      task.completedAt = new Date();
-
-      if (outcome.status === 'completed') {
-        const { wasTruncated, content } = this.truncateResult(outcome.result);
-        task.result = content;
-        task.isResultTruncated = wasTruncated;
-      } else if (outcome.status === 'failed') {
-        task.error = outcome.error;
-        if (outcome.result) {
-          const { wasTruncated, content } = this.truncateResult(outcome.result);
-          task.result = content;
-          task.isResultTruncated = wasTruncated;
-        }
-      } else if (outcome.status === 'cancelled' && outcome.result) {
-        const { wasTruncated, content } = this.truncateResult(outcome.result);
-        task.result = content;
-        task.isResultTruncated = wasTruncated;
-      }
-
-      // Clean up idle timer if present
-      const idleTimer = this.pendingIdleTasks.get(task.id);
-      if (idleTimer) {
-        clearTimeout(idleTimer);
-        this.pendingIdleTasks.delete(task.id);
-      }
-
-      // Clean up tasksBySessionId map to prevent memory leak
-      if (task.sessionId) {
-        this.tasksBySessionId.delete(task.sessionId);
-      }
-
-      // Track finalized tasks for memory cleanup
-      this.taskEvictionQueue.push(task.id);
-      this.cleanupOldCompletedTasks();
-
-      // Send notification to parent session
-      if (task.parentSessionId) {
-        this.sendCompletionNotification(task).catch((err) => {
-          log(`[background-manager] notification failed: ${err}`);
-        });
-      }
-
-      // Resolve waiting callers
-      const resolver = this.completionResolvers.get(task.id);
-      if (resolver) {
-        resolver(task);
-        this.completionResolvers.delete(task.id);
-      }
-
-      // Clean up all resources for this task
-      this.resourceRegistry.cleanup(task.id);
-
-      log(`[background-manager] task ${outcome.status}: ${task.id}`, {
-        description: task.description,
-      });
-    } finally {
+    // Run finalization saga asynchronously
+    this.runFinalizationSaga(task, outcome).finally(() => {
       this.finalizingTasks.delete(task.id);
-    }
-  }
-
-  /**
-   * Format completion notice - simple with status emoji.
-   */
-  private formatCompletionNotice(task: BackgroundTask): string {
-    const [emoji, status] =
-      task.status === 'completed'
-        ? ['✓', 'completed']
-        : task.status === 'cancelled'
-          ? ['⊘', 'cancelled']
-          : ['✗', 'failed'];
-
-    return `${emoji} Task ${task.id} ${status}. Retrieve with: background_output task_id="${task.id}"`;
-  }
-
-  /**
-   * Core notification delivery - the actual network call.
-   * Shared between initial send and retry.
-   */
-  private async deliverNotification(
-    sessionId: string,
-    message: string,
-  ): Promise<void> {
-    const model = await this.getSessionModel(sessionId);
-    await this.client.session.prompt({
-      path: { id: sessionId },
-      body: {
-        model,
-        parts: [{ type: 'text' as const, text: message }],
-      },
     });
   }
 
   /**
-   * Send completion notification to parent session with atomic state tracking.
+   * Run the finalization saga for a task.
    */
-  private async sendCompletionNotification(
+  private async runFinalizationSaga(
     task: BackgroundTask,
+    outcome: TaskOutcome,
   ): Promise<void> {
-    // Skip if already sent or in progress
-    if (task.notificationState !== 'pending') {
+    // Check if already finalized (completed or failed)
+    if (task.status === 'completed' || task.status === 'failed') {
       return;
     }
 
-    // Skip notification if someone is waiting via background_output with timeout
-    if (this.completionResolvers.has(task.id)) {
+    // If already cancelled and outcome is also cancelled, just ensure completedAt is set
+    if (task.status === 'cancelled' && outcome.status === 'cancelled') {
+      if (!task.completedAt) {
+        task.completedAt = new Date();
+      }
       return;
     }
 
-    const key = `${task.parentSessionId}:${task.id}`;
-    if (this.pendingNotifications.has(key)) {
-      return;
+    // Use state machine for transition
+    const transitionContext: {
+      error?: Error;
+      result?: string;
+      truncated?: boolean;
+    } = {};
+
+    if (outcome.status === 'failed' && outcome.error) {
+      transitionContext.error = new Error(outcome.error);
+    }
+    if (outcome.status === 'completed' && outcome.result) {
+      transitionContext.result = outcome.result;
     }
 
-    // Mark as sending (atomic)
-    task.notificationState = 'sending';
+    const result = await this.stateMachine.transition(
+      task,
+      outcome.status,
+      transitionContext,
+    );
 
-    // Check parent session health before sending
-    if (!(await this.isParentSessionAlive(task.parentSessionId))) {
-      log(
-        `[background-manager] Parent session ${task.parentSessionId} is dead, cannot notify`,
-      );
-      task.notificationState = 'failed';
-      return;
-    }
-
-    const message = this.formatCompletionNotice(task);
-
-    try {
-      await this.deliverNotification(task.parentSessionId, message);
-
-      // Mark as sent only after successful delivery
-      task.notificationState = 'sent';
-      this.markAsPendingRetrieval(task.id);
-    } catch {
-      // Add to pending notifications for retry
-      task.notificationState = 'pending'; // Allow retry
-      this.pendingNotifications.set(key, {
+    if (!result.success) {
+      log('[background-manager] Failed to transition task', {
         taskId: task.id,
-        sessionId: task.parentSessionId,
-        message,
-        attempts: 0,
+        reason: result.reason,
       });
-      this.scheduleNotificationRetry(key);
-    }
-  }
-
-  /**
-   * Schedule a retry for a pending notification.
-   */
-  private scheduleNotificationRetry(key: string): void {
-    const pending = this.pendingNotifications.get(key);
-    if (!pending) return;
-
-    if (pending.attempts >= this.maxNotificationRetries) {
-      if (pending.timerId) clearTimeout(pending.timerId);
-
-      // Mark task notification as failed
-      const task = this.tasks.get(pending.taskId);
-      if (task) {
-        task.notificationState = 'failed';
-      }
-
-      this.pendingNotifications.delete(key);
-      log(
-        `[background-manager] notification permanently failed after ${pending.attempts} attempts: ${key}`,
-      );
       return;
     }
 
-    const delay = this.notificationRetryDelays[pending.attempts] ?? 4000;
-    if (pending.timerId) clearTimeout(pending.timerId);
+    task.completedAt = new Date();
+
+    if (outcome.status === 'completed') {
+      const { wasTruncated, content } = this.truncateResult(outcome.result);
+      task.result = content;
+      task.isResultTruncated = wasTruncated;
+    } else if (outcome.status === 'failed') {
+      task.error = outcome.error;
+      if (outcome.result) {
+        const { wasTruncated, content } = this.truncateResult(outcome.result);
+        task.result = content;
+        task.isResultTruncated = wasTruncated;
+      }
+    } else if (outcome.status === 'cancelled' && outcome.result) {
+      const { wasTruncated, content } = this.truncateResult(outcome.result);
+      task.result = content;
+      task.isResultTruncated = wasTruncated;
+    }
+
+    // Clean up idle timer if present
+    const idleTimer = this.pendingIdleTasks.get(task.id);
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      this.pendingIdleTasks.delete(task.id);
+    }
+
+    // Clean up tasksBySessionId map to prevent memory leak
+    if (task.sessionId) {
+      this.tasksBySessionId.delete(task.sessionId);
+    }
+
+    // Track finalized tasks for memory cleanup
+    this.taskEvictionQueue.push(task.id);
+    this.cleanupOldCompletedTasks();
+
+    // Create and run the finalization saga
+    const saga = this.createFinalizationSaga(task, outcome);
 
     try {
-      pending.timerId = setTimeout(() => this.retryNotification(key), delay);
-    } catch (err) {
-      // If scheduling fails, clean up
-      this.pendingNotifications.delete(key);
-      log('[background-manager] Failed to schedule notification retry', {
-        key,
-        error: String(err),
+      const sagaResult = await this.sagaOrchestrator.startFinalization(
+        task.id,
+        saga,
+      );
+
+      if (!sagaResult.success) {
+        log('[background-manager] Saga failed', {
+          taskId: task.id,
+          failedStep: sagaResult.failedStep,
+          error: sagaResult.error,
+        });
+      }
+    } catch (error) {
+      log('[background-manager] Saga execution error', {
+        taskId: task.id,
+        error: error instanceof Error ? error.message : String(error),
       });
     }
+
+    // Resolve waiters via lock-free operations
+    this.lockFreeOps.resolveWaiters(task);
+
+    // Release concurrency slot for the model
+    globalConcurrencyManager.release(task.model);
+
+    log(`[background-manager] task ${outcome.status}: ${task.id}`, {
+      description: task.description,
+    });
   }
 
   /**
-   * Retry a pending notification.
+   * Create a finalization saga for a task.
    */
-  private async retryNotification(key: string): Promise<void> {
-    const pending = this.pendingNotifications.get(key);
-    if (!pending) return;
-
-    pending.attempts++;
-
-    try {
-      await this.deliverNotification(pending.sessionId, pending.message);
-
-      // Mark task as sent
-      const task = this.tasks.get(pending.taskId);
-      if (task) {
-        task.notificationState = 'sent';
+  private createFinalizationSaga(
+    task: BackgroundTask,
+    outcome: TaskOutcome,
+  ): TaskFinalizationSaga {
+    const extractResultFn = async (): Promise<string> => {
+      if (task.sessionId) {
+        return (await this.extractLastAssistantMessage(task.sessionId)) || '';
       }
+      return '';
+    };
 
-      this.pendingNotifications.delete(key);
-      this.markAsPendingRetrieval(pending.taskId);
-      log(`[background-manager] notification retry succeeded: ${key}`);
-    } catch {
-      this.scheduleNotificationRetry(key);
-    }
+    const sendNotificationFn = async (): Promise<void> => {
+      if (!task.parentSessionId) return;
+
+      try {
+        await globalNotificationService.send(task);
+      } catch (error) {
+        // Notification failure is non-critical, just log
+        console.warn(
+          `[BackgroundManager] Notification failed for task ${task.id}:`,
+          error,
+        );
+      }
+    };
+
+    return new TaskFinalizationSaga(
+      task,
+      outcome,
+      globalEventBus,
+      globalResourceManager,
+      extractResultFn,
+      sendNotificationFn,
+    );
   }
 
   /**
@@ -1021,6 +1042,7 @@ export class BackgroundTaskManager {
    * Ensures task constraints are preserved.
    */
   private buildBackgroundTaskSystemPrompt(task: BackgroundTask): string {
+    const isReadOnly = READONLY_AGENTS.includes(task.agent);
     return `You are executing a background task.
 
 Task ID: ${task.id}
@@ -1030,7 +1052,7 @@ Description: ${task.description}
 Constraints:
 - Return your output when complete - this will be returned to the user
 - Do NOT use background_task or task tools - this is already a background task
-- Focus on the task goal: ${task.prompt.slice(0, 200)}${task.prompt.length > 200 ? '...' : ''}`;
+${isReadOnly ? '- You are a READ-ONLY research agent. You CANNOT spawn background tasks or make modifications. Focus on research and analysis only.\n' : ''}- Focus on the task goal: ${task.prompt.slice(0, 200)}${task.prompt.length > 200 ? '...' : ''}`;
   }
 
   /**
@@ -1044,7 +1066,7 @@ Constraints:
   }
 
   /**
-   * Wait for a task to complete.
+   * Wait for a task to complete using lock-free operations.
    *
    * @param taskId - The task ID to wait for
    * @param timeout - Maximum time to wait in milliseconds (0 = no timeout)
@@ -1054,58 +1076,9 @@ Constraints:
     taskId: string,
     timeout = 0,
   ): Promise<BackgroundTask | null> {
-    const task = this.tasks.get(taskId);
-    if (!task) return null;
-
-    if (this.isTerminal(task.status)) {
-      return task;
-    }
-
-    return new Promise((resolve) => {
-      let timerId: ReturnType<typeof setTimeout> | undefined;
-
-      const resolver = (t: BackgroundTask | null) => {
-        if (timerId) clearTimeout(timerId);
-        resolve(t);
-      };
-
-      this.completionResolvers.set(taskId, resolver);
-
-      // Register resolver for cleanup
-      this.resourceRegistry.register(
-        taskId,
-        new ResolverDisposable(taskId, this.completionResolvers),
-      );
-
-      // Re-check: task may have completed between status check and resolver registration
-      const currentTask = this.tasks.get(taskId);
-      if (currentTask && this.isTerminal(currentTask.status)) {
-        this.completionResolvers.delete(taskId);
-        if (timerId) clearTimeout(timerId);
-        resolve(currentTask);
-        return;
-      }
-
-      const effectiveTimeout =
-        timeout > 0 ? timeout : BackgroundTaskManager.MAX_WAIT_TIMEOUT_MS;
-
-      if (effectiveTimeout > 0) {
-        timerId = setTimeout(() => {
-          this.completionResolvers.delete(taskId);
-
-          // On timeout, mark task as failed
-          const currentTask = this.tasks.get(taskId);
-          if (currentTask && !this.isTerminal(currentTask.status)) {
-            this.finalizeTask(currentTask, {
-              status: 'failed',
-              error: `Wait timeout exceeded (${effectiveTimeout}ms)`,
-            });
-          }
-
-          resolve(this.tasks.get(taskId) ?? null);
-        }, effectiveTimeout);
-      }
-    });
+    const effectiveTimeout =
+      timeout > 0 ? timeout : BackgroundTaskManager.MAX_WAIT_TIMEOUT_MS;
+    return this.lockFreeOps.waitForCompletion(taskId, effectiveTimeout);
   }
 
   /**
@@ -1156,6 +1129,7 @@ Constraints:
     if (inStartQueue && this.startQueueSet.has(task.id)) {
       this.startQueue = this.startQueue.filter((t) => t.id !== task.id);
       this.startQueueSet.delete(task.id);
+      this.metrics.updateQueueSize(this.startQueue.length);
     }
 
     // Clean up the session if one was created
@@ -1240,6 +1214,22 @@ Constraints:
   }
 
   /**
+   * Check if a session ID belongs to a running background task.
+   * Used to prevent nested background tasks (anti-pattern).
+   */
+  private isBackgroundTaskSession(sessionId: string): boolean {
+    // Check if this session ID is mapped to a background task
+    const taskId = this.tasksBySessionId.get(sessionId);
+    if (!taskId) return false;
+
+    const task = this.tasks.get(taskId);
+    if (!task) return false;
+
+    // Only consider active background tasks (not terminal states)
+    return ['pending', 'starting', 'running'].includes(task.status);
+  }
+
+  /**
    * Mark a task as pending retrieval (notification sent, waiting for background_output)
    */
   markAsPendingRetrieval(taskId: string): void {
@@ -1271,19 +1261,6 @@ Constraints:
           this.pendingRetrievalsBySession.delete(task.parentSessionId);
         }
       }
-    }
-  }
-
-  /**
-   * Check if parent session is still alive.
-   * @returns true if session exists and is accessible
-   */
-  private async isParentSessionAlive(sessionId: string): Promise<boolean> {
-    try {
-      await this.client.session.messages({ path: { id: sessionId } });
-      return true;
-    } catch {
-      return false;
     }
   }
 
@@ -1334,13 +1311,6 @@ Constraints:
    * Clean up all tasks.
    */
   cleanup(): void {
-    // Cancel all pending notification timers before clearing
-    for (const [, pending] of this.pendingNotifications) {
-      if (pending.timerId) {
-        clearTimeout(pending.timerId);
-      }
-    }
-
     // Clear pending idle debounce timers
     for (const timer of this.pendingIdleTasks.values()) {
       clearTimeout(timer);
@@ -1352,23 +1322,27 @@ Constraints:
       clearInterval(this.orphanedSweepTimer);
     }
 
-    // Clean up all resources
-    this.resourceRegistry.cleanupAll();
+    // Clean up resources via global resource manager
+    globalResourceManager.cleanupAll();
+
+    // Dispose lock-free operations
+    this.lockFreeOps.dispose();
+
+    // Dispose saga orchestrator
+    this.sagaOrchestrator.dispose();
+
+    // Dispose metrics collector
+    this.metrics.dispose();
 
     this.startQueue = [];
     this.startQueueSet.clear();
-
-    for (const [, resolver] of this.completionResolvers) {
-      resolver(null);
-    }
-    this.completionResolvers.clear();
+    this.metrics.updateQueueSize(0);
 
     this.activeStarts = 0;
     this.tasks.clear();
     this.tasksBySessionId.clear();
     this.tasksByParentSession.clear();
     this.taskEvictionQueue = [];
-    this.pendingNotifications.clear();
     this.pendingRetrievals.clear();
     this.pendingRetrievalsBySession.clear();
   }
@@ -1495,6 +1469,7 @@ Constraints:
         error?: string;
         isResultTruncated?: boolean;
         parentSessionId: string;
+        model?: string;
         startedAt: string;
         completedAt?: string;
         prompt: string;
@@ -1522,6 +1497,7 @@ Constraints:
         error: task.error,
         isResultTruncated: task.isResultTruncated,
         parentSessionId: task.parentSessionId,
+        model: task.model ?? 'default',
         startedAt: new Date(task.startedAt),
         completedAt: task.completedAt ? new Date(task.completedAt) : undefined,
         prompt: task.prompt,
