@@ -98,6 +98,7 @@ export interface BackgroundTask {
   startedAt: Date; // Task creation timestamp
   completedAt?: Date; // Task completion/failure timestamp
   prompt: string; // Initial prompt
+  finalizing?: boolean; // Flag to prevent re-entrant finalization
 }
 
 /**
@@ -1151,16 +1152,19 @@ ${isReadOnly ? '- You are a READ-ONLY research agent. You CANNOT spawn backgroun
       }
 
       // Extract last assistant message before deleting session
-      this.extractLastAssistantMessage(task.sessionId)
-        .then((lastMessage) => {
-          this.finalizeTask(task, {
-            status: 'cancelled',
-            result: lastMessage || '(Task cancelled - no output)',
+      if (!task.finalizing) {
+        task.finalizing = true;
+        this.extractLastAssistantMessage(task.sessionId)
+          .then((lastMessage) => {
+            this.finalizeTask(task, {
+              status: 'cancelled',
+              result: lastMessage || '(Task cancelled - no output)',
+            });
+          })
+          .catch(() => {
+            this.finalizeTask(task, { status: 'cancelled' });
           });
-        })
-        .catch(() => {
-          this.finalizeTask(task, { status: 'cancelled' });
-        });
+      }
     } else {
       this.finalizeTask(task, { status: 'cancelled' });
     }

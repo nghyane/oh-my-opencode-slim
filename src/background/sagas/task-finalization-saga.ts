@@ -55,22 +55,10 @@ export interface SagaResult {
  * 3. Clean up resources
  */
 export class TaskFinalizationSaga {
-  private notificationService: {
-    send: (message: string) => Promise<void>;
-  } | null = null;
   private resourceManager: GuaranteedCleanupManager | null = null;
   private steps: SagaStep[] = [];
   private completedSteps: string[] = [];
   private compensations: Compensation[] = [];
-
-  /**
-   * Set the notification service
-   */
-  setNotificationService(service: {
-    send: (message: string) => Promise<void>;
-  }): void {
-    this.notificationService = service;
-  }
 
   /**
    * Set the resource manager
@@ -159,11 +147,6 @@ export class TaskFinalizationSaga {
    * Execute the saga
    */
   async execute(): Promise<SagaResult> {
-    if (!this.notificationService) {
-      throw new Error(
-        'TaskFinalizationSaga: NotificationService not set. Call setNotificationService() first.',
-      );
-    }
     if (!this.resourceManager) {
       throw new Error(
         'TaskFinalizationSaga: ResourceManager not set. Call setResourceManager() first.',

@@ -58,11 +58,11 @@ export class ConcurrencyManager {
       const next = queue.shift();
       if (next) {
         next();
+        return; // Slot transferred, don't decrement
       }
-    } else {
-      // Decrement count
-      this.counts.set(model, Math.max(0, (this.counts.get(model) ?? 1) - 1));
     }
+    // Decrement count
+    this.counts.set(model, Math.max(0, (this.counts.get(model) ?? 1) - 1));
   }
 
   /**
