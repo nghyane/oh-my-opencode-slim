@@ -19,22 +19,22 @@ import type {
 } from './types';
 
 // Colors
-const GREEN = '\x1b[32m';
-const BLUE = '\x1b[34m';
-const YELLOW = '\x1b[33m';
-const RED = '\x1b[31m';
+const GREEN_COLOR = '\x1b[32m';
+const BLUE_COLOR = '\x1b[34m';
+const YELLOW_COLOR = '\x1b[33m';
+const RED_COLOR = '\x1b[31m';
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
 
 const SYMBOLS = {
-  check: `${GREEN}✓${RESET}`,
-  cross: `${RED}✗${RESET}`,
-  arrow: `${BLUE}→${RESET}`,
-  bullet: `${DIM}•${RESET}`,
-  info: `${BLUE}ℹ${RESET}`,
-  warn: `${YELLOW}⚠${RESET}`,
-  star: `${YELLOW}★${RESET}`,
+  CHECK: `${GREEN_COLOR}✓${RESET}`,
+  CROSS: `${RED_COLOR}✗${RESET}`,
+  ARROW: `${BLUE_COLOR}→${RESET}`,
+  BULLET: `${DIM}•${RESET}`,
+  INFO: `${BLUE_COLOR}ℹ${RESET}`,
+  WARN: `${YELLOW_COLOR}⚠${RESET}`,
+  STAR: `${YELLOW_COLOR}★${RESET}`,
 };
 
 function printHeader(isUpdate: boolean): void {
@@ -51,19 +51,19 @@ function printStep(step: number, total: number, message: string): void {
 }
 
 function printSuccess(message: string): void {
-  console.log(`${SYMBOLS.check} ${message}`);
+  console.log(`${SYMBOLS.CHECK} ${message}`);
 }
 
 function printError(message: string): void {
-  console.log(`${SYMBOLS.cross} ${RED}${message}${RESET}`);
+  console.log(`${SYMBOLS.CROSS} ${RED_COLOR}${message}${RESET}`);
 }
 
 function printInfo(message: string): void {
-  console.log(`${SYMBOLS.info} ${message}`);
+  console.log(`${SYMBOLS.INFO} ${message}`);
 }
 
 function printWarning(message: string): void {
-  console.log(`${SYMBOLS.warn} ${YELLOW}${message}${RESET}`);
+  console.log(`${SYMBOLS.WARN} ${YELLOW_COLOR}${message}${RESET}`);
 }
 
 async function checkOpenCodeInstalled(): Promise<{
@@ -75,7 +75,7 @@ async function checkOpenCodeInstalled(): Promise<{
     printError('OpenCode is not installed on this system.');
     printInfo('Install it with:');
     console.log(
-      `     ${BLUE}curl -fsSL https://opencode.ai/install | bash${RESET}`,
+      `     ${BLUE_COLOR}curl -fsSL https://opencode.ai/install | bash${RESET}`,
     );
     return { ok: false };
   }
@@ -93,7 +93,7 @@ function handleStepResult(
     return false;
   }
   printSuccess(
-    `${successMsg} ${SYMBOLS.arrow} ${DIM}${result.configPath}${RESET}`,
+    `${successMsg} ${SYMBOLS.ARROW} ${DIM}${result.configPath}${RESET}`,
   );
   return true;
 }
@@ -105,14 +105,14 @@ function formatConfigSummary(config: InstallConfig): string {
   const lines: string[] = [];
   lines.push(`${BOLD}Configuration Summary${RESET}`);
   lines.push('');
-  lines.push(`  ${BOLD}Preset:${RESET} ${BLUE}${preset}${RESET}`);
-  lines.push(`  ${config.hasKimi ? SYMBOLS.check : `${DIM}○${RESET}`} Kimi`);
+  lines.push(`  ${BOLD}Preset:${RESET} ${BLUE_COLOR}${preset}${RESET}`);
+  lines.push(`  ${config.hasKimi ? SYMBOLS.CHECK : `${DIM}○${RESET}`} Kimi`);
   lines.push(
-    `  ${config.hasOpenAI ? SYMBOLS.check : `${DIM}○${RESET}`} OpenAI`,
+    `  ${config.hasOpenAI ? SYMBOLS.CHECK : `${DIM}○${RESET}`} OpenAI`,
   );
-  lines.push(`  ${SYMBOLS.check} Opencode Zen (Big Pickle)`); // Always enabled
+  lines.push(`  ${SYMBOLS.CHECK} Opencode Zen (Big Pickle)`); // Always enabled
   lines.push(
-    `  ${config.hasTmux ? SYMBOLS.check : `${DIM}○${RESET}`} Tmux Integration`,
+    `  ${config.hasTmux ? SYMBOLS.CHECK : `${DIM}○${RESET}`} Tmux Integration`,
   );
   return lines.join('\n');
 }
@@ -129,7 +129,7 @@ function printAgentModels(config: InstallConfig): void {
   if (!agents || Object.keys(agents).length === 0) return;
 
   console.log(
-    `${BOLD}Agent Configuration (Preset: ${BLUE}${presetName}${RESET}):${RESET}`,
+    `${BOLD}Agent Configuration (Preset: ${BLUE_COLOR}${presetName}${RESET}):${RESET}`,
   );
   console.log();
 
@@ -142,7 +142,7 @@ function printAgentModels(config: InstallConfig): void {
         ? ` ${DIM}[${info.skills.join(', ')}]${RESET}`
         : '';
     console.log(
-      `  ${DIM}${agent}${RESET}${padding} ${SYMBOLS.arrow} ${BLUE}${info.model}${RESET}${skillsStr}`,
+      `  ${DIM}${agent}${RESET}${padding} ${SYMBOLS.ARROW} ${BLUE_COLOR}${info.model}${RESET}${skillsStr}`,
     );
   }
   console.log();
@@ -165,7 +165,7 @@ async function askYesNo(
   defaultValue: BooleanArg = 'no',
 ): Promise<BooleanArg> {
   const hint = defaultValue === 'yes' ? '[Y/n]' : '[y/N]';
-  const answer = (await rl.question(`${BLUE}${prompt}${RESET} ${hint}: `))
+  const answer = (await rl.question(`${BLUE_COLOR}${prompt}${RESET} ${hint}: `))
     .trim()
     .toLowerCase();
 
@@ -218,7 +218,7 @@ async function runInteractiveMode(
     console.log(`${BOLD}Recommended Skills:${RESET}`);
     for (const skill of RECOMMENDED_SKILLS) {
       console.log(
-        `  ${SYMBOLS.bullet} ${BOLD}${skill.name}${RESET}: ${skill.description}`,
+        `  ${SYMBOLS.BULLET} ${BOLD}${skill.name}${RESET}: ${skill.description}`,
       );
     }
     console.log();
@@ -229,7 +229,7 @@ async function runInteractiveMode(
     console.log(`${BOLD}Custom Skills:${RESET}`);
     for (const skill of CUSTOM_SKILLS) {
       console.log(
-        `  ${SYMBOLS.bullet} ${BOLD}${skill.name}${RESET}: ${skill.description}`,
+        `  ${SYMBOLS.BULLET} ${BOLD}${skill.name}${RESET}: ${skill.description}`,
       );
     }
     console.log();
@@ -328,7 +328,7 @@ async function runInstall(config: InstallConfig): Promise<number> {
   }
 
   console.log(
-    `${SYMBOLS.star} ${BOLD}${GREEN}${isUpdate ? 'Configuration updated!' : 'Installation complete!'}${RESET}`,
+    `${SYMBOLS.STAR} ${BOLD}${GREEN_COLOR}${isUpdate ? 'Configuration updated!' : 'Installation complete!'}${RESET}`,
   );
   console.log();
   console.log(`${BOLD}Next steps:${RESET}`);
@@ -338,7 +338,7 @@ async function runInstall(config: InstallConfig): Promise<number> {
 
   if (config.hasKimi || config.hasOpenAI) {
     console.log(`  ${nextStep++}. Authenticate with your providers:`);
-    console.log(`     ${BLUE}$ opencode auth login${RESET}`);
+    console.log(`     ${BLUE_COLOR}$ opencode auth login${RESET}`);
     if (config.hasKimi) {
       console.log();
       console.log(`     Then select ${BOLD}Kimi For Coding${RESET} provider.`);
@@ -349,11 +349,11 @@ async function runInstall(config: InstallConfig): Promise<number> {
   // TODO: tmux has a bug, disabled for now
   // if (config.hasTmux) {
   //   console.log(`  ${nextStep++}. Run OpenCode inside tmux:`)
-  //   console.log(`     ${BLUE}$ tmux${RESET}`)
-  //   console.log(`     ${BLUE}$ opencode${RESET}`)
+  //   console.log(`     ${BLUE_COLOR}$ tmux${RESET}`)
+  //   console.log(`     ${BLUE_COLOR}$ opencode${RESET}`)
   // } else {
   console.log(`  ${nextStep++}. Start OpenCode:`);
-  console.log(`     ${BLUE}$ opencode${RESET}`);
+  console.log(`     ${BLUE_COLOR}$ opencode${RESET}`);
   // }
   console.log();
 
@@ -373,7 +373,7 @@ export async function install(args: InstallArgs): Promise<number> {
       printHeader(false);
       printError('Missing or invalid arguments:');
       for (const key of errors) {
-        console.log(`  ${SYMBOLS.bullet} --${key}=<yes|no>`);
+        console.log(`  ${SYMBOLS.BULLET} --${key}=<yes|no>`);
       }
       console.log();
       printInfo(

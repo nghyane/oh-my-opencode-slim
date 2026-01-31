@@ -220,12 +220,12 @@ Only cancels pending/starting/running tasks (not completed/failed).`,
     },
     async execute(args) {
       if (args.all === true) {
-        const count = manager.cancel();
+        const count = await manager.cancel();
         return `Cancelled ${count} task(s).`;
       }
 
       if (typeof args.task_id === 'string') {
-        const count = manager.cancel(args.task_id);
+        const count = await manager.cancel(args.task_id);
         return count > 0
           ? `Cancelled task ${args.task_id}.`
           : `Task ${args.task_id} not found or not running.`;

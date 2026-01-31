@@ -1,5 +1,5 @@
 import type { AgentConfig } from '@opencode-ai/sdk';
-import { Prompts } from '../prompts/index.js';
+import { Prompts } from '../prompts/index';
 
 export interface AgentDefinition {
   name: string;

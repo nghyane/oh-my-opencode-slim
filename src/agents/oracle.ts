@@ -1,5 +1,5 @@
-import { Prompts } from '../prompts/index.js';
-import type { AgentDefinition } from './orchestrator.js';
+import { Prompts } from '../prompts/index';
+import type { AgentDefinition } from './orchestrator';
 
 export function createOracleAgent(
   model: string,
