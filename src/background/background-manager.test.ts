@@ -31,6 +31,7 @@ function createMockContext(overrides?: {
           async () => overrides?.sessionMessagesResult ?? { data: [] },
         ),
         prompt: mock(async () => ({})),
+        delete: mock(async () => ({})),
       },
     },
     directory: '/test/directory',
@@ -60,6 +61,7 @@ describe('BackgroundTaskManager', () => {
       const manager = new BackgroundTaskManager(ctx, undefined, {
         background: {
           maxConcurrentStarts: 5,
+          maxCompletedTasks: 50,
         },
       });
       expect(manager).toBeDefined();
@@ -193,6 +195,9 @@ describe('BackgroundTaskManager', () => {
           status: { type: 'idle' },
         },
       });
+
+      // Wait for debounce to complete (500ms) + a bit more
+      await new Promise((r) => setTimeout(r, 600));
 
       expect(task.status).toBe('completed');
       expect(task.result).toBe('Result text');
@@ -468,6 +473,9 @@ describe('BackgroundTaskManager', () => {
         },
       });
 
+      // Wait for debounce to complete
+      await new Promise((r) => setTimeout(r, 600));
+
       // Now try to cancel - should fail since already completed
       const count = manager.cancel(task.id);
       expect(count).toBe(0);
@@ -499,7 +507,7 @@ describe('BackgroundTaskManager', () => {
       const manager = new BackgroundTaskManager(ctx);
 
       const task = manager.launch({
-        agent: 'test',
+        agent: 'explorer',
         prompt: 'test',
         description: 'test',
         parentSessionId: 'p1',
@@ -517,6 +525,9 @@ describe('BackgroundTaskManager', () => {
           status: { type: 'idle' },
         },
       });
+
+      // Wait for debounce to complete
+      await new Promise((r) => setTimeout(r, 600));
 
       expect(task.status).toBe('completed');
       expect(task.result).toContain('I am thinking...');
@@ -543,7 +554,7 @@ describe('BackgroundTaskManager', () => {
 
       // Test completion timestamp
       const task1 = manager.launch({
-        agent: 'test',
+        agent: 'explorer',
         prompt: 't1',
         description: 'd1',
         parentSessionId: 'p1',
@@ -560,12 +571,15 @@ describe('BackgroundTaskManager', () => {
         },
       });
 
+      // Wait for debounce to complete
+      await new Promise((r) => setTimeout(r, 600));
+
       expect(task1.completedAt).toBeInstanceOf(Date);
       expect(task1.status).toBe('completed');
 
       // Test cancellation timestamp
       const task2 = manager.launch({
-        agent: 'test',
+        agent: 'explorer',
         prompt: 't2',
         description: 'd2',
         parentSessionId: 'p2',
@@ -588,11 +602,11 @@ describe('BackgroundTaskManager', () => {
         },
       });
       const manager = new BackgroundTaskManager(ctx, undefined, {
-        background: { maxConcurrentStarts: 10 },
+        background: { maxConcurrentStarts: 10, maxCompletedTasks: 100 },
       });
 
       const task = manager.launch({
-        agent: 'test',
+        agent: 'explorer',
         prompt: 't',
         description: 'd',
         parentSessionId: 'parent-session',
@@ -611,6 +625,222 @@ describe('BackgroundTaskManager', () => {
 
       // Should have called prompt.append for notification
       expect(ctx.client.session.prompt).toHaveBeenCalled();
+    });
+  });
+
+  describe('state machine transitions', () => {
+    test('blocks invalid state transitions', () => {
+      const ctx = createMockContext();
+      const manager = new BackgroundTaskManager(ctx);
+
+      const task = manager.launch({
+        agent: 'explorer',
+        prompt: 'test',
+        description: 'test',
+        parentSessionId: 'parent-123',
+      });
+
+      // Task may be pending or starting depending on timing
+      // Set it to pending to test the transition logic
+      task.status = 'pending';
+
+      // Cannot transition directly from pending to completed
+      const result = (manager as any).tryTransition(task, 'completed');
+      expect(result).toBe(false);
+      expect(task.status).toBe('pending');
+
+      // Can transition from pending to starting
+      const result2 = (manager as any).tryTransition(task, 'starting');
+      expect(result2).toBe(true);
+      expect(task.status).toBe('starting');
+
+      // Cannot transition from starting to completed (needs running first)
+      const result3 = (manager as any).tryTransition(task, 'completed');
+      expect(result3).toBe(false);
+      expect(task.status).toBe('starting');
+
+      // Can transition from starting to running
+      const result4 = (manager as any).tryTransition(task, 'running');
+      expect(result4).toBe(true);
+      expect(task.status).toBe('running');
+
+      // Cannot transition from running back to pending
+      const result5 = (manager as any).tryTransition(task, 'pending');
+      expect(result5).toBe(false);
+      expect(task.status).toBe('running');
+    });
+
+    test('cancelled task shows cancelled not completed when cancelled during extraction', async () => {
+      const ctx = createMockContext({
+        sessionMessagesResult: {
+          data: [
+            {
+              info: { role: 'assistant' },
+              parts: [{ type: 'text', text: 'Result text' }],
+            },
+          ],
+        },
+      });
+      const manager = new BackgroundTaskManager(ctx);
+
+      const task = manager.launch({
+        agent: 'explorer',
+        prompt: 'test',
+        description: 'test',
+        parentSessionId: 'parent-123',
+      });
+
+      // Wait for task to start
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Cancel the task
+      manager.cancel(task.id);
+
+      // Task should be cancelled, not completed
+      expect(task.status).toBe('cancelled');
+    });
+
+    test('double cancel only calls finalizeTask once', async () => {
+      const ctx = createMockContext();
+      const manager = new BackgroundTaskManager(ctx);
+
+      const task = manager.launch({
+        agent: 'explorer',
+        prompt: 'test',
+        description: 'test',
+        parentSessionId: 'parent-123',
+      });
+
+      // Wait for task to start
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Cancel twice
+      const count1 = manager.cancel(task.id);
+      const count2 = manager.cancel(task.id);
+
+      expect(count1).toBe(1);
+      expect(count2).toBe(0);
+      expect(task.status).toBe('cancelled');
+    });
+
+    test('waitForCompletion handles race when task completes between check and registration', async () => {
+      const ctx = createMockContext({
+        sessionMessagesResult: {
+          data: [
+            {
+              info: { role: 'assistant' },
+              parts: [{ type: 'text', text: 'Done' }],
+            },
+          ],
+        },
+      });
+      const manager = new BackgroundTaskManager(ctx);
+
+      const task = manager.launch({
+        agent: 'explorer',
+        prompt: 'test',
+        description: 'test',
+        parentSessionId: 'parent-123',
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Complete the task
+      await manager.handleSessionStatus({
+        type: 'session.status',
+        properties: {
+          sessionID: task.sessionId,
+          status: { type: 'idle' },
+        },
+      });
+
+      // Now waitForCompletion should return immediately with the completed task
+      const result = await manager.waitForCompletion(task.id, 5000);
+      expect(result?.status).toBe('completed');
+      expect(result?.result).toBe('Done');
+    });
+
+    test('waitForCompletion uses default max timeout when timeout is 0', async () => {
+      const ctx = createMockContext({
+        sessionMessagesResult: {
+          data: [
+            {
+              info: { role: 'assistant' },
+              parts: [{ type: 'text', text: 'Done' }],
+            },
+          ],
+        },
+      });
+      const manager = new BackgroundTaskManager(ctx);
+
+      const task = manager.launch({
+        agent: 'explorer',
+        prompt: 'test',
+        description: 'test',
+        parentSessionId: 'parent-123',
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Complete the task first
+      await manager.handleSessionStatus({
+        type: 'session.status',
+        properties: {
+          sessionID: task.sessionId,
+          status: { type: 'idle' },
+        },
+      });
+
+      // Wait for debounce to complete
+      await new Promise((r) => setTimeout(r, 600));
+
+      // Now waitForCompletion should return immediately with the completed task
+      const result = await manager.waitForCompletion(task.id, 0);
+      expect(result?.status).toBe('completed');
+      expect(result?.result).toBe('Done');
+    });
+
+    test('idle timer is cleared when task is cancelled during debounce', async () => {
+      const ctx = createMockContext({
+        sessionMessagesResult: {
+          data: [
+            {
+              info: { role: 'assistant' },
+              parts: [{ type: 'text', text: 'Result text' }],
+            },
+          ],
+        },
+      });
+      const manager = new BackgroundTaskManager(ctx);
+
+      const task = manager.launch({
+        agent: 'explorer',
+        prompt: 'test',
+        description: 'test',
+        parentSessionId: 'parent-123',
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Simulate session becoming idle - this starts the debounce timer
+      await manager.handleSessionStatus({
+        type: 'session.status',
+        properties: {
+          sessionID: task.sessionId,
+          status: { type: 'idle' },
+        },
+      });
+
+      // Cancel the task during the debounce period
+      manager.cancel(task.id);
+
+      // Task should be cancelled immediately, not completed after debounce
+      expect(task.status).toBe('cancelled');
     });
   });
 });

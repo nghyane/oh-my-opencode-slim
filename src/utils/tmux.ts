@@ -232,7 +232,14 @@ export async function spawnTmuxPane(
   try {
     // Use `opencode attach <url> --session <id>` to connect to the existing server
     // This ensures the TUI receives streaming updates from the same server handling the prompt
-    const opencodeCmd = `opencode attach ${serverUrl} --session ${sessionId}`;
+    // Pass arguments as array to prevent command injection via serverUrl/sessionId
+    const opencodeArgs = [
+      'opencode',
+      'attach',
+      serverUrl,
+      '--session',
+      sessionId,
+    ];
 
     // Simple split - layout will handle positioning
     // Use -h for horizontal split (new pane to the right) as default
@@ -243,10 +250,10 @@ export async function spawnTmuxPane(
       '-P', // Print pane info
       '-F',
       '#{pane_id}', // Format: just the pane ID
-      opencodeCmd,
+      ...opencodeArgs,
     ];
 
-    log('[tmux] spawnTmuxPane: executing', { tmux, args, opencodeCmd });
+    log('[tmux] spawnTmuxPane: executing', { tmux, args });
 
     const proc = spawn([tmux, ...args], {
       stdout: 'pipe',

@@ -42,6 +42,7 @@ export type McpName = z.infer<typeof McpNameSchema>;
 // Background task configuration
 export const BackgroundTaskConfigSchema = z.object({
   maxConcurrentStarts: z.number().min(1).max(50).default(10),
+  maxCompletedTasks: z.number().min(10).max(1000).optional().default(100),
 });
 
 export type BackgroundTaskConfig = z.infer<typeof BackgroundTaskConfigSchema>;

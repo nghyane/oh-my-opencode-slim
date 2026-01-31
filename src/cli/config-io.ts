@@ -137,7 +137,7 @@ export async function addPluginToOpenCodeConfig(): Promise<ConfigMergeResult> {
   }
 }
 
-// Removed: addAuthPlugins - no longer needed with cliproxy
+// Removed: addAuthPlugins - no longer needed
 // Removed: addProviderConfig - default opencode now has kimi provider config
 
 export function writeLiteConfig(

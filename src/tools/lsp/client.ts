@@ -1,6 +1,6 @@
 // LSP Client - Full implementation with connection pooling
 
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { extname, resolve } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
@@ -338,15 +338,18 @@ export class LSPClient {
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  async openFile(filePath: string): Promise<void> {
+  async openFile(filePath: string, delayMs = 1000): Promise<void> {
     const absPath = resolve(filePath);
     if (this.openedFiles.has(absPath)) return;
 
-    const text = readFileSync(absPath, 'utf-8');
+    const text = await readFile(absPath, 'utf-8');
     const ext = extname(absPath);
     const languageId = getLanguageId(ext);
 
-    this.connection?.sendNotification('textDocument/didOpen', {
+    if (!this.connection) {
+      throw new Error('LSP connection not established');
+    }
+    this.connection.sendNotification('textDocument/didOpen', {
       textDocument: {
         uri: pathToFileURL(absPath).href,
         languageId,
@@ -356,20 +359,53 @@ export class LSPClient {
     });
     this.openedFiles.add(absPath);
 
-    await new Promise((r) => setTimeout(r, 1000));
+    if (delayMs > 0) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
   }
 
   async definition(
     filePath: string,
     line: number,
     character: number,
+    timeoutMs = 30000,
   ): Promise<unknown> {
     const absPath = resolve(filePath);
     await this.openFile(absPath);
-    return this.connection?.sendRequest('textDocument/definition', {
-      textDocument: { uri: pathToFileURL(absPath).href },
-      position: { line: line - 1, character },
+    if (!this.connection) {
+      throw new Error('LSP connection not established');
+    }
+    const requestPromise = this.connection.sendRequest(
+      'textDocument/definition',
+      {
+        textDocument: { uri: pathToFileURL(absPath).href },
+        position: { line: line - 1, character },
+      },
+    );
+    return this.withTimeout(requestPromise, timeoutMs, 'definition');
+  }
+
+  private withTimeout<T>(
+    promise: Promise<T> | undefined,
+    timeoutMs: number,
+    operation: string,
+  ): Promise<T> {
+    if (!promise) {
+      return Promise.reject(
+        new Error(`LSP operation ${operation} failed: no connection`),
+      );
+    }
+    if (timeoutMs <= 0) {
+      return promise;
+    }
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(
+          new Error(`LSP request timeout: ${operation} after ${timeoutMs}ms`),
+        );
+      }, timeoutMs);
     });
+    return Promise.race([promise, timeoutPromise]);
   }
 
   async references(
@@ -377,28 +413,48 @@ export class LSPClient {
     line: number,
     character: number,
     includeDeclaration = true,
+    timeoutMs = 30000,
   ): Promise<unknown> {
     const absPath = resolve(filePath);
     await this.openFile(absPath);
-    return this.connection?.sendRequest('textDocument/references', {
-      textDocument: { uri: pathToFileURL(absPath).href },
-      position: { line: line - 1, character },
-      context: { includeDeclaration },
-    });
+    if (!this.connection) {
+      throw new Error('LSP connection not established');
+    }
+    const requestPromise = this.connection.sendRequest(
+      'textDocument/references',
+      {
+        textDocument: { uri: pathToFileURL(absPath).href },
+        position: { line: line - 1, character },
+        context: { includeDeclaration },
+      },
+    );
+    return this.withTimeout(requestPromise, timeoutMs, 'references');
   }
 
-  async diagnostics(filePath: string): Promise<{ items: Diagnostic[] }> {
+  async diagnostics(
+    filePath: string,
+    timeoutMs = 30000,
+  ): Promise<{ items: Diagnostic[] }> {
     const absPath = resolve(filePath);
     const uri = pathToFileURL(absPath).href;
     await this.openFile(absPath);
     await new Promise((r) => setTimeout(r, 500));
 
+    if (!this.connection) {
+      throw new Error('LSP connection not established');
+    }
+
     try {
-      const result = await this.connection?.sendRequest(
+      const requestPromise = this.connection.sendRequest(
         'textDocument/diagnostic',
         {
           textDocument: { uri },
         },
+      );
+      const result = await this.withTimeout(
+        requestPromise,
+        timeoutMs,
+        'diagnostics',
       );
       if (result && typeof result === 'object' && 'items' in result) {
         return result as { items: Diagnostic[] };
@@ -413,14 +469,19 @@ export class LSPClient {
     line: number,
     character: number,
     newName: string,
+    timeoutMs = 30000,
   ): Promise<unknown> {
     const absPath = resolve(filePath);
     await this.openFile(absPath);
-    return this.connection?.sendRequest('textDocument/rename', {
+    if (!this.connection) {
+      throw new Error('LSP connection not established');
+    }
+    const requestPromise = this.connection.sendRequest('textDocument/rename', {
       textDocument: { uri: pathToFileURL(absPath).href },
       position: { line: line - 1, character },
       newName,
     });
+    return this.withTimeout(requestPromise, timeoutMs, 'rename');
   }
 
   isAlive(): boolean {

@@ -19,6 +19,7 @@ import {
   lsp_goto_definition,
   lsp_rename,
 } from './tools';
+import { lspManager } from './tools/lsp/client';
 import { startTmuxCheck } from './utils';
 import { log } from './utils/logger';
 
@@ -49,7 +50,6 @@ const OhMyOpenCodeLite: Plugin = async (ctx) => {
     ctx,
     backgroundManager,
     tmuxConfig,
-    config,
   );
   const mcps = createBuiltinMcps(config.disabled_mcps);
 
@@ -67,6 +67,39 @@ const OhMyOpenCodeLite: Plugin = async (ctx) => {
 
   // Initialize post-read nudge hook
   const postReadNudgeHook = createPostReadNudgeHook();
+
+  // Setup graceful shutdown handlers
+  const setupGracefulShutdown = () => {
+    const shutdown = async (signal: string) => {
+      log(`Received ${signal}, starting graceful shutdown...`);
+
+      // Stop accepting new background tasks
+      backgroundManager.pause();
+
+      // Wait for running tasks with timeout
+      try {
+        await backgroundManager.drain({ timeout: 30000 });
+        log('All background tasks completed or timed out');
+      } catch {
+        log('Warning: Some background tasks did not complete in time');
+      }
+
+      // Save task state for recovery
+      await backgroundManager.saveState();
+
+      // Cleanup resources
+      await tmuxSessionManager.cleanup();
+      await lspManager.stopAll();
+
+      log('Graceful shutdown complete');
+      process.exit(0);
+    };
+
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+  };
+
+  setupGracefulShutdown();
 
   return {
     name: 'oh-my-opencode-slim',
@@ -152,7 +185,7 @@ const OhMyOpenCodeLite: Plugin = async (ctx) => {
 
     event: async (input) => {
       // Handle auto-update checking
-      await autoUpdateChecker.event(input);
+      autoUpdateChecker.event(input);
 
       // Handle tmux pane spawning for OpenCode's Task tool sessions
       await tmuxSessionManager.onSessionCreated(
@@ -187,6 +220,43 @@ const OhMyOpenCodeLite: Plugin = async (ctx) => {
 
     // Nudge after file reads to encourage delegation
     'tool.execute.after': postReadNudgeHook['tool.execute.after'],
+
+    // Inject background task status into parent session's system prompt.
+    // Note: This hook only affects the main chat session's system prompt.
+    // Background tasks run in isolated sessions with their own system prompts
+    // (built inline via session.prompt with buildBackgroundTaskSystemPrompt),
+    // so they do not receive this transform. This is intentional - background
+    // tasks have dedicated constraints in their <BackgroundTask> XML block.
+    'experimental.chat.system.transform': async (
+      input: { sessionID: string },
+      output: { system: string[] },
+    ): Promise<void> => {
+      // Early exit: skip all work if no background state exists
+      if (!backgroundManager.hasAnyTaskStateForSession(input.sessionID)) {
+        return;
+      }
+
+      const running = backgroundManager.getRunningTasksForSession(
+        input.sessionID,
+      );
+      const pending = backgroundManager.getPendingRetrievalsForSession(
+        input.sessionID,
+      );
+
+      if (running.length === 0 && pending.length === 0) return;
+
+      const lines: string[] = [];
+      for (const t of running) {
+        lines.push(`- ${t.id}: ${t.description} (${t.agent}, running)`);
+      }
+      for (const t of pending) {
+        lines.push(`- ${t.id}: completed, call background_output`);
+      }
+
+      output.system.push(
+        `\n<BackgroundTasks>\n${lines.join('\n')}\n</BackgroundTasks>`,
+      );
+    },
   };
 };
 

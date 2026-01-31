@@ -40,3 +40,8 @@ export const MAX_POLL_TIME_MS = 5 * 60 * 1000; // 5 minutes
 
 // Polling stability
 export const STABLE_POLLS_THRESHOLD = 3;
+
+// Background task result limits
+export const BACKGROUND_MAX_RESULT_SIZE = 100 * 1024; // 100KB
+export const BACKGROUND_RESULT_TRUNCATION_MESSAGE =
+  '\n\n[...result truncated due to size limit]';

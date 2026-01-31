@@ -119,6 +119,10 @@ export class TmuxSessionManager {
 
       // Start polling for fallback reliability
       this.startPolling();
+    } else if (!paneResult.success) {
+      log('[tmux-session-manager] WARNING: task running without visible pane', {
+        sessionId,
+      });
     }
   }
 
@@ -226,6 +230,22 @@ export class TmuxSessionManager {
 
     if (this.sessions.size === 0) {
       this.stopPolling();
+    }
+  }
+
+  /**
+   * Close a pane by its session ID.
+   * Used when cancelling a task to clean up the associated TMUX pane.
+   */
+  closeBySessionId(sessionId: string): void {
+    const info = this.sessions.get(sessionId);
+    if (info) {
+      closeTmuxPane(info.paneId).catch((err) =>
+        log('[tmux-session-manager] failed to close pane', {
+          error: String(err),
+        }),
+      );
+      this.sessions.delete(sessionId);
     }
   }
 

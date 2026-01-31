@@ -60,7 +60,10 @@ export function startBackgroundInit(): void {
   }
 }
 
-export async function runSg(options: RunOptions): Promise<SgResult> {
+export async function runSg(
+  options: RunOptions,
+  retries = 0,
+): Promise<SgResult> {
   const args = [
     'run',
     '-p',
@@ -144,10 +147,23 @@ export async function runSg(options: RunOptions): Promise<SgResult> {
       nodeError.message?.includes('ENOENT') ||
       nodeError.message?.includes('not found')
     ) {
+      if (retries >= 1) {
+        return {
+          matches: [],
+          totalMatches: 0,
+          truncated: false,
+          error:
+            `ast-grep CLI binary not found after retry.\n\n` +
+            `Auto-download failed. Manual install options:\n` +
+            `  bun add -D @ast-grep/cli\n` +
+            `  cargo install ast-grep --locked\n` +
+            `  brew install ast-grep`,
+        };
+      }
       const downloadedPath = await ensureAstGrepBinary();
       if (downloadedPath) {
         setSgCliPath(downloadedPath);
-        return runSg(options);
+        return runSg(options, retries + 1);
       } else {
         return {
           matches: [],

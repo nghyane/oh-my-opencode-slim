@@ -9,8 +9,28 @@ import {
 } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CircuitBreaker } from '../../utils/circuit-breaker';
 import type { LSPClient } from './client';
 import { lspManager } from './client';
+
+// Circuit breaker per workspace + server combination
+const circuitBreakers = new Map<string, CircuitBreaker>();
+
+function getCircuitBreaker(root: string, serverId: string): CircuitBreaker {
+  const key = `${root}:${serverId}`;
+  if (!circuitBreakers.has(key)) {
+    circuitBreakers.set(
+      key,
+      new CircuitBreaker({
+        failureThreshold: 3,
+        resetTimeoutMs: 30000,
+        halfOpenMaxCalls: 1,
+      }),
+    );
+  }
+  return circuitBreakers.get(key) as CircuitBreaker;
+}
+
 import { findServerForExtension } from './config';
 import { SEVERITY_MAP, SYMBOL_KIND_MAP } from './constants';
 import type {
@@ -89,11 +109,24 @@ export async function withLspClient<T>(
 
   const server = result.server;
   const root = findWorkspaceRoot(absPath);
+
+  // Check circuit breaker before attempting connection
+  const circuitBreaker = getCircuitBreaker(root, server.id);
+  if (!circuitBreaker.canExecute()) {
+    throw new Error(
+      `LSP server '${server.id}' is temporarily unavailable (circuit breaker OPEN). ` +
+        `Please wait ~30 seconds before retrying.`,
+    );
+  }
+
   const client = await lspManager.getClient(root, server);
 
   try {
-    return await fn(client);
+    const result = await fn(client);
+    circuitBreaker.recordSuccess();
+    return result;
   } catch (e) {
+    circuitBreaker.recordFailure();
     if (e instanceof Error && e.message.includes('timeout')) {
       const isInitializing = lspManager.isServerInitializing(root, server.id);
       if (isInitializing) {
