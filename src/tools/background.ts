@@ -3,18 +3,97 @@ import {
   type ToolDefinition,
   tool,
 } from '@opencode-ai/plugin';
-import type { BackgroundTaskManager } from '../background';
+import type { BackgroundTask, BackgroundTaskManager } from '../background';
 import { SUBAGENT_NAMES } from '../config';
 import type { TmuxConfig } from '../config/schema';
 
 const z = tool.schema;
 
+// Constants
+const SYNC_TIMEOUT_MS = 30_000;
+const LARGE_RESULT_THRESHOLD = 5000;
+
+/**
+ * Formats duration between start and end time
+ */
+function formatDuration(startedAt: Date, completedAt?: Date): string {
+  const end = completedAt ?? new Date();
+  return `${Math.floor((end.getTime() - startedAt.getTime()) / 1000)}s`;
+}
+
+/**
+ * Formats task result for output
+ */
+function formatTaskOutput(task: BackgroundTask): string {
+  const duration = formatDuration(task.startedAt, task.completedAt);
+  const resultLen = task.result?.length ?? 0;
+
+  const lines = [
+    `Task: ${task.id}`,
+    `Status: ${task.status}`,
+    `Description: ${task.description}`,
+    `Duration: ${duration}`,
+    `Result Size: ${resultLen} bytes`,
+  ];
+
+  if (task.isResultTruncated) {
+    lines.push('Result truncated due to size limit.');
+  }
+
+  lines.push('');
+
+  switch (task.status) {
+    case 'completed':
+      if (task.result != null) lines.push(task.result);
+      break;
+    case 'failed':
+      lines.push(`Error: ${task.error}`);
+      break;
+    case 'cancelled':
+      lines.push('(Task cancelled)');
+      break;
+  }
+
+  if (resultLen > LARGE_RESULT_THRESHOLD) {
+    lines.push(
+      '[Tip: Extract key findings and discard this output to free context.]',
+    );
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Handles synchronous wait for task completion
+ */
+async function handleSyncWait(
+  manager: BackgroundTaskManager,
+  taskId: string,
+): Promise<string | undefined> {
+  const completed = await manager.waitForCompletion(taskId, SYNC_TIMEOUT_MS);
+
+  if (
+    !completed ||
+    !['completed', 'failed', 'cancelled'].includes(completed.status)
+  ) {
+    return undefined;
+  }
+
+  manager.clearPendingRetrieval(taskId);
+  const duration = formatDuration(completed.startedAt, completed.completedAt);
+
+  switch (completed.status) {
+    case 'completed':
+      return completed.result ?? `Task completed (${duration})`;
+    case 'failed':
+      return `Task failed (${duration}): ${completed.error}`;
+    case 'cancelled':
+      return `Task cancelled (${duration})`;
+  }
+}
+
 /**
  * Creates background task management tools for the plugin.
- * @param _ctx - Plugin input context
- * @param manager - Background task manager for launching and tracking tasks
- * @param _tmuxConfig - Optional tmux configuration for session management
- * @returns Object containing background_task, background_output, and background_cancel tools
  */
 export function createBackgroundTools(
   _ctx: PluginInput,
@@ -23,19 +102,16 @@ export function createBackgroundTools(
 ): Record<string, ToolDefinition> {
   const agentNames = SUBAGENT_NAMES.join(', ');
 
-  // Tool for launching agent tasks (fire-and-forget)
   const background_task = tool({
-    description: `Launch an agent task that runs asynchronously.
+    description: `Launch async agent task.
 
-WORKFLOW:
-1. Call background_task → get task_id
-2. Continue with other work OR stop and wait
-3. System will notify you when the task completes
-4. Call background_output with task_id to get results
+FLOW: launch → FORGET → notification → retrieve
 
-Available agents: ${agentNames}
+⚠️ NEVER call background_output before notification (throws error)
 
-Max 10 concurrent tasks.`,
+Agents: ${agentNames}
+
+Max 10 concurrent.`,
 
     args: {
       description: z
@@ -60,7 +136,6 @@ Max 10 concurrent tasks.`,
       const description = String(args.description);
       const wait = args.wait === true;
 
-      // Fire-and-forget launch
       const task = manager.launch({
         agent,
         prompt,
@@ -68,131 +143,87 @@ Max 10 concurrent tasks.`,
         parentSessionId: toolContext.sessionID,
       });
 
-      // Synchronous mode: wait for completion and return result directly
       if (wait) {
-        const completed = await manager.waitForCompletion(task.id, 30_000);
-        if (
-          completed &&
-          (completed.status === 'completed' ||
-            completed.status === 'failed' ||
-            completed.status === 'cancelled')
-        ) {
-          manager.clearPendingRetrieval(task.id);
-          const duration = completed.completedAt
-            ? `${Math.floor((completed.completedAt.getTime() - completed.startedAt.getTime()) / 1000)}s`
-            : 'unknown';
-          if (completed.status === 'completed' && completed.result != null) {
-            return completed.result;
-          }
-          if (completed.status === 'failed') {
-            return `Task failed (${duration}): ${completed.error}`;
-          }
-          return `Task ${completed.status} (${duration})`;
+        const result = await handleSyncWait(manager, task.id);
+        if (result !== undefined) {
+          return result;
         }
-        // Timeout: fall through to async mode
       }
 
       return `Task ${task.id} launched.`;
     },
   });
 
-  // Tool for retrieving output from background tasks
   const background_output = tool({
-    description: `Get results from a completed background task.
+    description: `Get results from completed background task.
 
-Call ONLY after the system notifies you the task is complete.
-Calling while running will throw an error.
+⚠️ ONLY call AFTER notification (throws error if before)
 
-Returns task status, results, or error information.`,
+✅ launch → notification → background_output
+❌ launch → background_output              // Too soon
+❌ launch → background_output → ...        // Polling`,
 
     args: {
       task_id: z
         .string()
-        .describe('Task ID from the "[Background Task Complete]" notification'),
+        .regex(/^bg_[a-f0-9]{8}$/, {
+          message:
+            'Task ID must be a valid background task ID (e.g., bg_abc123de)',
+        })
+        .describe('Task ID from the completion notification'),
     },
     async execute(args) {
       const taskId = String(args.task_id);
-
       const task = manager.getResult(taskId);
 
       if (!task) {
-        throw new Error(`Task not found: ${taskId}`);
+        throw new Error(
+          `Task not found: ${taskId}. Task may have been cleared or ID is invalid.`,
+        );
       }
 
-      // STRICT PROTOCOL ENFORCEMENT: Task must be in terminal state
-      // This means the notification MUST have been sent first
-      if (
-        task.status !== 'completed' &&
-        task.status !== 'failed' &&
-        task.status !== 'cancelled'
-      ) {
+      if (!['completed', 'failed', 'cancelled'].includes(task.status)) {
         const elapsed = Math.floor(
           (Date.now() - task.startedAt.getTime()) / 1000,
         );
         throw new Error(
-          `Task ${taskId} is still ${task.status} (elapsed: ${elapsed}s).\n\n` +
-            `Stop and wait. The system will notify you when the task completes.`,
+          `Task ${taskId} is ${task.status} (${elapsed}s).\n\n` +
+            '⚠️ STOP POLLING.\n' +
+            'Wait for notification, then call background_output.',
         );
       }
 
-      // Calculate task duration
-      const duration = task.completedAt
-        ? `${Math.floor(
-            (task.completedAt.getTime() - task.startedAt.getTime()) / 1000,
-          )}s`
-        : `${Math.floor((Date.now() - task.startedAt.getTime()) / 1000)}s`;
-
-      // Clear pending retrieval since we're retrieving now
       manager.clearPendingRetrieval(taskId);
-
-      let output = `Task: ${task.id}
-Status: ${task.status}
-Description: ${task.description}
-Duration: ${duration}
-Result Size: ${task.result?.length ?? 0} bytes
-${task.isResultTruncated ? 'Result truncated due to size limit.' : ''}
-`;
-
-      // Include task result or error based on status
-      if (task.status === 'completed' && task.result != null) {
-        output += task.result;
-      } else if (task.status === 'failed') {
-        output += `Error: ${task.error}`;
-      } else if (task.status === 'cancelled') {
-        output += '(Task cancelled)';
-      }
-
-      // Hint for large results to encourage context cleanup
-      const resultLen = task.result?.length ?? 0;
-      if (resultLen > 5000) {
-        output +=
-          '\n\n[Tip: Extract key findings and discard this output to free context.]';
-      }
-
-      return output;
+      return formatTaskOutput(task);
     },
   });
 
-  // Tool for canceling running background tasks
   const background_cancel = tool({
     description: `Cancel background task(s).
 
-task_id: cancel specific task
-all=true: cancel all running tasks
+Use when:
+- Task is no longer needed
+- Task is stuck/running too long
+- Cleaning up resources
 
-Only cancels pending/starting/running tasks.`,
+Only cancels pending/starting/running tasks (not completed/failed).`,
     args: {
-      task_id: z.string().optional().describe('Specific task to cancel'),
+      task_id: z
+        .string()
+        .regex(/^bg_[a-f0-9]{8}$/, {
+          message:
+            'Task ID must be a valid background task ID (e.g., bg_abc123de)',
+        })
+        .optional()
+        .describe('Specific task to cancel'),
       all: z.boolean().optional().describe('Cancel all running tasks'),
     },
     async execute(args) {
-      // Cancel all running tasks if requested
       if (args.all === true) {
         const count = manager.cancel();
         return `Cancelled ${count} task(s).`;
       }
 
-      // Cancel specific task if task_id provided
       if (typeof args.task_id === 'string') {
         const count = manager.cancel(args.task_id);
         return count > 0

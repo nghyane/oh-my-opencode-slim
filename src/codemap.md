@@ -1,24 +1,488 @@
-# src/
+# Code Map: oh-my-opencode-slim
 
 ## Responsibility
-- `src/index.ts` delivers the oh-my-opencode-slim plugin by merging configuration, instantiating orchestrator/subagent definitions, wiring background managers, tmux helpers, built-in tools, MCPs, and lifecycle hooks so OpenCode sees a single cohesive module.
-- `config/`, `agents/`, `tools/`, `background/`, `hooks/`, and `utils/` contain the reusable building blocks (loader/schema/constants, agent factories/permission helpers, tool factories, background polling/session managers, hook implementations, and tmux/variant/log helpers) that power that entry point.
-- `cli/` exposes the install/update script (argument parsing + interactive prompts) that edits OpenCode config, installs recommended/custom skills, and updates provider credentials to bootstrap this plugin on a host machine.
+
+**oh-my-opencode-slim** is a lightweight OpenCode plugin that provides AI-powered coding assistance through agent orchestration, code analysis tools, and external service integrations.
+
+### Core Responsibilities
+
+1. **Agent Orchestration**
+   - Central orchestrator agent (`orchestrator`) that delegates tasks to specialist subagents
+   - 5 specialized subagents: `explorer` (code search), `librarian` (documentation), `oracle` (reasoning), `designer` (UI/code generation), `fixer` (debugging)
+   - Agent configuration with model overrides, temperature settings, and skill permissions
+   - Agent prompts loaded dynamically from markdown files
+
+2. **Code Analysis Tools**
+   - **grep**: Ripgrep-based content search with regex support
+   - **ast-grep**: AST-aware pattern matching and replacement for 25+ languages
+   - **LSP Tools**: `lsp_goto_definition`, `lsp_find_references`, `lsp_diagnostics`, `lsp_rename` using Language Server Protocol
+   - Tools managed via connection pooling for LSP servers
+
+3. **MCP (Model Context Protocol) Integrations**
+   - **websearch**: Exa AI web search for real-time information
+   - **context7**: Official documentation lookup for libraries
+   - **grep-app**: GitHub code search via grep.app
+   - Remote MCP servers with optional API key authentication
+
+4. **Background Task Management**
+   - Fire-and-forget task execution in isolated sessions
+   - Task queuing with configurable concurrency limits
+   - Session lifecycle management (creation, completion, cleanup)
+   - Task state persistence for crash recovery
+   - Orphaned task detection and cleanup
+
+5. **Tmux Integration**
+   - Spawns tmux panes for subagent sessions
+   - Pane management with automatic cleanup on completion
+   - Layout configuration (main-vertical, main-horizontal, tiled, etc.)
+
+6. **CLI Installation Tool**
+   - Interactive or non-interactive plugin installation
+   - OpenCode config modification
+   - Recommended skill installation
+   - Custom skill setup
+
+7. **Workflow Hooks**
+   - Auto-update checker with toast notifications
+   - Phase reminder for workflow compliance
+   - Post-read nudge to encourage delegation
 
 ## Design
-- Agent creation follows explicit factories (`agents/index.ts`, per-agent creators under `agents/`) with override/permission helpers (`config/utils.ts`, `cli/skills.ts`) so defaults live in `config/constants.ts`, prompts can be swapped via `config/loader.ts`, and variant labels propagate through `utils/agent-variant.ts`.
-- Background tooling composes `BackgroundTaskManager`, `TmuxSessionManager`, and `createBackgroundTools` (which uses `tool` with Zod schemas) to provide async/sync task launches plus cancel/output helpers; polling/prompt flow lives in `tools/background.ts` while TMUX lifecycle uses `utils/tmux.ts` to spawn/close panes and reapply layouts.
-- Hooks are isolated (`hooks/auto-update-checker`, `phase-reminder`, `post-read-nudge`) and exported via `hooks/index.ts`, so the plugin simply registers them via the `event`, `experimental.chat.messages.transform`, and `tool.execute.after` hooks defined in `index.ts`.
-- Supplemental tools (`tools/grep`, `tools/lsp`) bundle ripgrep and LSP helpers behind the OpenCode `tool` interface and are mounted in `index.ts` alongside background/task tools.
+
+### Module Structure
+
+```
+src/
+├── index.ts                 # Main plugin entry point
+├── cli/                     # CLI installation tool
+│   ├── index.ts             # CLI entry (install command)
+│   ├── install.ts           # Installation flow orchestration
+│   ├── config-manager.ts    # OpenCode config file management
+│   ├── config-io.ts         # Config read/write operations
+│   ├── skills.ts            # Recommended skills installation
+│   ├── custom-skills.ts     # Custom skill setup
+│   ├── system.ts            # System detection
+│   ├── providers.ts         # Provider configuration
+│   ├── paths.ts             # Path utilities
+│   └── types.ts             # TypeScript types
+├── agents/                  # Agent definitions and factories
+│   ├── index.ts             # Agent creation and configuration
+│   ├── orchestrator.ts      # Orchestrator agent factory
+│   ├── explorer.ts          # Explorer agent factory
+│   ├── librarian.ts         # Librarian agent factory
+│   ├── oracle.ts            # Oracle agent factory
+│   ├── designer.ts          # Designer agent factory
+│   ├── fixer.ts             # Fixer agent factory
+│   └── index.test.ts        # Agent tests
+├── tools/                   # Tool implementations
+│   ├── index.ts             # Tool exports
+│   ├── background.ts        # Background task tools
+│   ├── grep/                # Ripgrep-based search
+│   │   ├── index.ts
+│   │   ├── tools.ts         # grep tool definition
+│   │   ├── cli.ts           # CLI wrapper for ripgrep
+│   │   ├── downloader.ts    # Binary download
+│   │   ├── constants.ts
+│   │   ├── types.ts
+│   │   └── utils.ts
+│   ├── ast-grep/            # AST-aware search
+│   │   ├── index.ts
+│   │   ├── tools.ts         # ast_grep_search/replace tools
+│   │   ├── cli.ts           # CLI wrapper
+│   │   ├── downloader.ts
+│   │   ├── constants.ts
+│   │   ├── types.ts
+│   │   └── utils.ts
+│   └── lsp/                 # Language Server Protocol
+│       ├── index.ts
+│       ├── tools.ts         # LSP tool definitions
+│       ├── client.ts        # LSP client with connection pooling
+│       ├── config.ts        # Server configuration
+│       ├── constants.ts
+│       ├── types.ts
+│       └── utils.ts
+├── mcp/                     # MCP server configurations
+│   ├── index.ts             # MCP factory
+│   ├── types.ts             # MCP types
+│   ├── websearch.ts         # Exa web search
+│   ├── context7.ts          # Context7 documentation
+│   └── grep-app.ts          # grep.app GitHub search
+├── background/              # Background task management
+│   ├── index.ts             # Exports
+│   ├── background-manager.ts # Task lifecycle, queuing, persistence
+│   ├── tmux-session-manager.ts # Tmux pane management
+│   ├── persistence.ts       # Disk persistence for recovery
+│   └── background.ts        # Background task tools
+├── hooks/                   # Plugin hooks
+│   ├── index.ts             # Hook exports
+│   ├── auto-update-checker/ # Auto-update notifications
+│   ├── phase-reminder/      # Workflow phase reminders
+│   └── post-read-nudge/     # Delegation nudging
+├── config/                  # Configuration management
+│   ├── index.ts             # Config exports
+│   ├── schema.ts            # Zod schemas for validation
+│   ├── constants.ts         # Constants (agent names, etc.)
+│   ├── loader.ts            # Config/prompt loading
+│   ├── agent-mcps.ts        # Agent-MCP mapping
+│   └── utils.ts             # Config utilities
+├── prompts/                 # Agent prompts
+│   └── index.ts             # Prompt loading with caching
+└── utils/                   # Utilities
+    ├── index.ts             # Utility exports
+    ├── logger.ts            # Structured logging
+    ├── tmux.ts              # Tmux commands
+    ├── circuit-breaker.ts   # Circuit breaker pattern
+    ├── zip-extractor.ts     # ZIP extraction
+    ├── agent-variant.ts     # Agent variant handling
+    └── agent-variant.test.ts
+```
+
+### Key Design Patterns
+
+1. **Plugin Pattern**
+   - Main export is a `Plugin` async function that receives `PluginInput`
+   - Returns agent definitions, tool definitions, MCP configurations, and hooks
+   - Receives `client` for API calls and `directory` for file operations
+
+2. **Factory Pattern**
+   - Agent creation via factory functions (`createOrchestratorAgent`, `createExplorerAgent`, etc.)
+   - Configurable prompts, models, and permissions per agent
+   - Tool creation via `tool()` function from SDK
+
+3. **Connection Pooling**
+   - `LSPServerManager` manages LSP client lifecycle
+   - Reference counting for client reuse
+   - Idle timeout and cleanup timer
+   - Single instance via singleton pattern
+
+4. **Event-Driven Architecture**
+   - Session events (`session.created`, `session.status`) trigger actions
+   - Hooks transform messages and system prompts
+   - Background task completion via notifications
+
+5. **Resource Management**
+   - `TaskResourceRegistry` for centralized cleanup
+   - Timer and resolver disposables
+   - Graceful shutdown with drain timeout
+
+6. **Lazy Loading**
+   - LSP servers resolved on first tool use
+   - Prompt caching with hot reload support
+   - Dynamic import for persistence module
+
+7. **Configuration Validation**
+   - Zod schemas for all config types
+   - Runtime validation with descriptive errors
+   - Default values via schema defaults
 
 ## Flow
-- Startup: `index.ts` calls `loadPluginConfig` (user + project JSON + presets) to build a `PluginConfig`, passes it to `getAgentConfigs` (which uses `createAgents`, agent factories, `loadAgentPrompt`, and `getAgentMcpList`) and to `BackgroundTaskManager`/`TmuxSessionManager`/`createBackgroundTools` so the in-memory state matches user overrides.
-- Plugin registration: `index.ts` registers agents, the tool map (background/task, `grep`, `ast_grep_*`, `lsp_*`), MCP definitions (`createBuiltinMcps`), and hooks (`createAutoUpdateCheckerHook`, `createPhaseReminderHook`, `createPostReadNudgeHook`); configuration hook merges those values back into the OpenCode config (default agent, permission rules parsed from `config/agent-mcps`, and MCP access policies).
-- Runtime: `BackgroundTaskManager.launch` spins up sessions and prompts agents via the OpenCode client, `pollTask`/`pollSession` watch for idle status before resolving results, while `TmuxSessionManager` observes `session.created` events to spawn panes via `utils/tmux` and close them when sessions idle or time out; tool hooks prevent recursion by toggling `background_task/task` permission when sending prompts.
-- CLI flow: `cli/install.ts` parses flags, optionally asks interactive prompts, checks OpenCode installation, adds plugin entries via `cli/config-manager.ts`, disables default agents, writes the lite config (`cli/config-io.ts`), and installs skills (`cli/skills.ts`, `cli/custom-skills.ts`).
+
+### Plugin Initialization Flow
+
+```
+OhMyOpenCodeLite(ctx)
+    ↓
+loadPluginConfig(ctx.directory)
+    ↓
+getAgentConfigs(config) → createAgents() → agent factories
+    ↓
+BackgroundTaskManager instantiation
+    ↓
+createBuiltinMcps() → MCP server configs
+    ↓
+TmuxSessionManager initialization (if tmux enabled)
+    ↓
+Hook creation (auto-update, phase reminder, post-read nudge)
+    ↓
+Graceful shutdown handlers (SIGINT, SIGTERM)
+    ↓
+Return Plugin object with:
+    - name
+    - agent configurations
+    - tool definitions
+    - mcp configurations
+    - config transformer
+    - event handler
+    - chat message transforms
+    - tool execute hooks
+```
+
+### Agent Delegation Flow
+
+```
+User Request
+    ↓
+Orchestrator Agent (primary)
+    ↓
+Analyzes request → Determines subagent
+    ↓
+Subagent Selection:
+    - explorer: "where is X?", "find Y"
+    - librarian: "docs for Z", "library internals"
+    - oracle: "explain why", "reasoning"
+    - designer: "UI design", "generate code"
+    - fixer: "debug", "fix bug"
+    ↓
+Subagent Execution (isolated session)
+    ↓
+Response → Orchestrator synthesizes
+    ↓
+User Output
+```
+
+### Tool Execution Flow
+
+#### grep Tool
+
+```
+grep(pattern, include?, path?)
+    ↓
+runRg(pattern, paths, globs, context)
+    ↓
+Bun.spawn(['ripgrep', ...])
+    ↓
+Parse output → formatGrepResult()
+    ↓
+Return formatted results
+```
+
+#### LSP Tool (e.g., lsp_goto_definition)
+
+```
+lsp_goto_definition(filePath, line, character)
+    ↓
+withLspClient(filePath) → get or create LSP client
+    ↓
+lspManager.getClient(root, server)
+    ↓
+LSPClient.openFile(filePath) → textDocument/didOpen
+    ↓
+LSPClient.definition() → textDocument/definition
+    ↓
+Parse Location/LocationLink → formatLocation()
+    ↓
+Return formatted result
+```
+
+#### ast_grep Tool
+
+```
+ast_grep_search(pattern, lang, paths)
+    ↓
+ast_grep CLI (downloaded if needed)
+    ↓
+Bun.spawn(['ast-grep', 'search', ...])
+    ↓
+Parse JSON output → format results
+    ↓
+Return matches with file paths and snippets
+```
+
+### Background Task Flow
+
+```
+background_task(agent, prompt, description)
+    ↓
+BackgroundTaskManager.launch(opts)
+    ↓
+Create BackgroundTask (pending)
+    ↓
+Enqueue for start (concurrency limit)
+    ↓
+startTask() → create session
+    ↓
+session.prompt() → send prompt with system prompt
+    ↓
+Task status: pending → starting → running
+    ↓
+Event: session.status (idle) detection
+    ↓
+resolveTaskSession() → extract messages
+    ↓
+finalizeTask() → status: completed/failed
+    ↓
+sendCompletionNotification() → parent session
+    ↓
+background_output(task_id) → retrieve result
+```
+
+### Tmux Pane Flow
+
+```
+session.created event (with parentID)
+    ↓
+TmuxSessionManager.onSessionCreated()
+    ↓
+spawnTmuxPane(sessionId, title, config, serverUrl)
+    ↓
+Bun.spawn(['tmux', 'split-window', ...])
+    ↓
+Track pane in sessions map
+    ↓
+Polling for status updates (fallback)
+    ↓
+session.status (idle) event
+    ↓
+closeTmuxPane(paneId)
+    ↓
+Remove from tracking
+```
+
+### CLI Installation Flow
+
+```
+bunx oh-my-opencode-slim install [--no-tui --kimi=yes --openai=yes --tmux=no]
+    ↓
+install(args)
+    ↓
+checkOpenCodeInstalled()
+    ↓
+addPluginToOpenCodeConfig()
+    ↓
+disableDefaultAgents()
+    ↓
+writeLiteConfig(config)
+    ↓
+For each recommended skill: installSkill()
+    ↓
+For each custom skill: installCustomSkill()
+    ↓
+Print configuration summary
+    ↓
+Print next steps
+```
 
 ## Integration
-- Connects directly to the OpenCode plugin API (`@opencode-ai/plugin`): registers agents/tools/mcps, responds to `session.created` and `tool.execute.after` events, injects `experimental.chat.messages.transform`, and makes RPC calls via `ctx.client`/`ctx.client.session` throughout `tools/background` and `background/*`.
-- Integrates with the host environment: `utils/tmux.ts` checks for tmux and server availability, `startTmuxCheck` pre-seeds the binary path, and `TmuxSessionManager`/`BackgroundTaskManager` coordinate via shared configuration and `tools/background` to keep CLI panes synchronized.
-- Hooks and helpers tie into external behavior: `hooks/auto-update-checker` reads `package.json` metadata, runs safe `bun install`, and posts toasts; `hooks/phase-reminder/post-read-nudge` enforce workflow reminders; `utils/logger.ts` centralizes structured logging used across modules.
-- CLI utilities modify OpenCode CLI/user config files (`cli/config-manager.ts`) and install additional skills/ providers, ensuring the plugin lands with the expected agents, provider auth helpers, and custom skill definitions.
+
+### OpenCode SDK Integration
+
+```typescript
+// @opencode-ai/plugin provides:
+import type { Plugin, PluginInput, PluginTool } from '@opencode-ai/plugin';
+
+// Plugin receives PluginInput:
+interface PluginInput {
+  client: {
+    session: { create, delete, prompt, messages, status };
+    // ... other APIs
+  };
+  directory: string;
+  serverUrl?: URL;
+}
+
+// Plugin returns:
+interface Plugin {
+  name: string;
+  agent: Record<string, AgentConfig>;
+  tool: Record<string, ToolDefinition>;
+  mcp: Record<string, McpConfig>;
+  config?: (config: Record<string, unknown>) => void;
+  event?: (input: { type: string; properties?: ... }) => void;
+  'experimental.chat.messages.transform'?: ...;
+  'experimental.chat.system.transform'?: ...;
+  'tool.execute.after'?: ...;
+}
+```
+
+### LSP Server Integration
+
+```typescript
+// Servers configured in src/tools/lsp/config.ts
+// Resolved by root path and file extension
+// Supports: typescript, typescriptreact, javascript, python, go, rust, etc.
+
+// Connection pooling via LSPServerManager
+// Single instance: const lspManager = LSPServerManager.getInstance();
+```
+
+### MCP Server Integration
+
+```typescript
+// Remote MCP configs in src/mcp/*.ts
+interface RemoteMcpConfig {
+  type: 'remote';
+  url: string;
+  headers?: Record<string, string>;
+  oauth: boolean;
+}
+
+// Built-in MCPs:
+const allBuiltinMcps = {
+  websearch: { type: 'remote', url: 'https://mcp.exa.ai/mcp?tools=web_search_exa', ... },
+  context7: { type: 'remote', url: 'https://mcp.context7.com/mcp', ... },
+  grep_app: { type: 'remote', url: 'https://mcp.grep.app', ... },
+};
+
+// Per-agent MCP permissions:
+DEFAULT_AGENT_MCPS = {
+  orchestrator: ['websearch'],
+  librarian: ['websearch', 'context7', 'grep_app'],
+  // ...
+};
+```
+
+### Config Integration
+
+```typescript
+// Zod schemas in src/config/schema.ts
+PluginConfigSchema = z.object({
+  preset: z.string().optional(),
+  presets: z.record(z.string(), PresetSchema).optional(),
+  agents: z.record(z.string(), AgentOverrideConfigSchema).optional(),
+  disabled_mcps: z.array(z.string()).optional(),
+  tmux: TmuxConfigSchema.optional(),
+  background: BackgroundTaskConfigSchema.optional(),
+});
+
+// Loaded from: ~/.config/opencode/oh-my-opencode-slim.json
+// Or project: .opencode/oh-my-opencode-slim.json
+```
+
+### Tool-to-Module Dependencies
+
+| Tool | Dependencies |
+|------|-------------|
+| `grep` | `tools/grep/cli.ts`, `tools/grep/utils.ts`, `utils/logger.ts` |
+| `ast_grep_search` | `tools/ast-grep/cli.ts`, `tools/ast-grep/utils.ts`, `utils/logger.ts` |
+| `ast_grep_replace` | `tools/ast-grep/cli.ts`, `tools/ast-grep/utils.ts` |
+| `lsp_goto_definition` | `tools/lsp/client.ts`, `tools/lsp/utils.ts`, `tools/lsp/config.ts` |
+| `lsp_find_references` | `tools/lsp/client.ts`, `tools/lsp/utils.ts` |
+| `lsp_diagnostics` | `tools/lsp/client.ts`, `tools/lsp/utils.ts` |
+| `lsp_rename` | `tools/lsp/client.ts`, `tools/lsp/utils.ts` |
+| `background_task` | `background/background-manager.ts`, `background/tmux-session-manager.ts` |
+| `background_output` | `background/background-manager.ts` |
+| `background_cancel` | `background/background-manager.ts` |
+
+### Agent-to-Prompt Mapping
+
+| Agent | Prompt File |
+|-------|------------|
+| orchestrator | `prompts/agents/orchestrator.md` |
+| explorer | `prompts/agents/explorer.md` |
+| librarian | `prompts/agents/librarian.md` |
+| oracle | `prompts/agents/oracle.md` |
+| designer | `prompts/agents/designer.md` |
+| fixer | `prompts/agents/fixer.md` |
+
+Prompts loaded via `Prompts` getter with caching in `src/prompts/index.ts`.
+
+### Hook Integration Points
+
+| Hook | Purpose | Location |
+|------|---------|----------|
+| `event` | Handle session events | `src/index.ts` |
+| `experimental.chat.messages.transform` | Phase reminders | `hooks/phase-reminder/index.ts` |
+| `tool.execute.after` | Post-read nudges | `hooks/post-read-nudge/index.ts` |
+| `experimental.chat.system.transform` | Background task status | `src/index.ts` |
+
+### Tmux Integration
+
+```typescript
+// Tmux commands via bun.spawn in src/utils/tmux.ts
+spawnTmuxPane(sessionId, title, config, serverUrl)
+closeTmuxPane(paneId)
+isInsideTmux()
+
+// Pane tracking via TmuxSessionManager
+// Config layouts: main-vertical, main-horizontal, tiled, even-horizontal, even-vertical
+```

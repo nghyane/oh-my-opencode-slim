@@ -4,41 +4,35 @@
 
 The `src/config/` module is responsible for:
 
-1. **Configuration Management**: Loading, validating, and merging plugin configuration from multiple sources (user config, project config, environment variables)
-2. **Schema Validation**: Providing type-safe configuration using Zod schemas
-3. **Agent Configuration**: Managing agent-specific overrides, models, skills, and MCP (Model Context Protocol) assignments
-4. **Prompt Customization**: Loading custom agent prompts from user directories
-5. **Constants Management**: Centralizing agent names, default models, polling intervals, and timeouts
+1. **Configuration Management**: Defining type-safe configuration schemas using Zod
+2. **Constants Management**: Centralizing agent names, default models, polling intervals, timeouts, and operational limits
+3. **Agent Configuration**: Providing typed schemas for agent-specific overrides, models, skills, and MCP assignments
+4. **Tmux Integration**: Defining layout and integration configuration schemas
+5. **Background Task Configuration**: Managing concurrency and result limits for background task execution
 
 ## Design
 
 ### Key Patterns
 
-**Multi-Source Configuration Merging**
-- User config: `~/.config/opencode/oh-my-opencode-slim.json` (or `$XDG_CONFIG_HOME`)
-- Project config: `<directory>/.opencode/oh-my-opencode-slim.json`
-- Environment override: `OH_MY_OPENCODE_SLIM_PRESET`
-- Project config takes precedence over user config
-- Nested objects (agents, tmux) are deep-merged; arrays are replaced
-
-**Preset System**
-- Named presets contain agent configurations
-- Presets are merged with root-level agent config (root overrides)
-- Supports preset selection via config file or environment variable
+**Schema-Driven Configuration**
+- All configuration structures defined as Zod schemas with runtime validation
+- TypeScript types inferred via `z.infer<typeof Schema>` for compile-time safety
+- Schemas support defaults (e.g., `TmuxConfigSchema.default({...})`) and catch behavior
 
 **Wildcard/Exclusion Syntax**
 - Skills and MCPs support `"*"` (all) and `"!item"` (exclude) syntax
-- Used in `parseList()` function for flexible filtering
+- Enables flexible permission filtering at runtime
 
-**Backward Compatibility**
-- Agent aliases map legacy names to current names (e.g., `explore` → `explorer`)
-- `getAgentOverride()` checks both current name and aliases
+**Agent Name Alias System**
+- Legacy agent names mapped to current names (e.g., `explore` → `explorer`)
+- Maintains backward compatibility while allowing naming evolution
 
 ### Core Abstractions
 
 **Configuration Schema Hierarchy**
+
 ```
-PluginConfig
+PluginConfigSchema
 ├── preset?: string
 ├── presets?: Record<string, Preset>
 ├── agents?: Record<string, AgentOverrideConfig>
@@ -46,36 +40,61 @@ PluginConfig
 ├── tmux?: TmuxConfig
 └── background?: BackgroundTaskConfig
 
-AgentOverrideConfig
+AgentOverrideConfigSchema
 ├── model?: string
-├── temperature?: number
+├── temperature?: number (0-2)
 ├── variant?: string
-├── skills?: string[]
-└── mcps?: string[]
+├── skills?: string[] ("*" = all, "!item" = exclude)
+└── mcps?: string[] ("*" = all, "!item" = exclude)
 
-TmuxConfig
-├── enabled: boolean
-├── layout: TmuxLayout
-└── main_pane_size: number
+TmuxConfigSchema
+├── enabled: boolean (default: false)
+├── layout: TmuxLayout (default: "main-vertical")
+└── main_pane_size: number (20-80, default: 60)
+
+TmuxLayoutSchema
+└── Enum: "main-horizontal" | "main-vertical" | "tiled" | "even-horizontal" | "even-vertical"
+
+BackgroundTaskConfigSchema
+├── maxConcurrentStarts: number (1-50, default: 10)
+└── maxCompletedTasks: number (10-1000, default: 100)
+
+McpNameSchema
+└── Enum: "websearch" | "context7" | "grep_app"
 ```
 
 **Agent Names**
-- `ORCHESTRATOR_NAME`: `'orchestrator'`
-- `SUBAGENT_NAMES`: `['explorer', 'librarian', 'oracle', 'designer', 'fixer']`
-- `ALL_AGENT_NAMES`: All agents combined
-- `AGENT_ALIASES`: Legacy name mappings
+- `ORCHESTRATOR_NAME`: `'orchestrator'` (const assertion)
+- `SUBAGENT_NAMES`: `['explorer', 'librarian', 'oracle', 'designer', 'fixer']` (readonly tuple)
+- `ALL_AGENT_NAMES`: `['orchestrator', 'explorer', 'librarian', 'oracle', 'designer', 'fixer']` (const assertion)
+- `AGENT_ALIASES`: Maps legacy names to canonical names
+- `AgentName`: TypeScript union type derived from `ALL_AGENT_NAMES`
 
 ### Interfaces
 
-**TypeScript Types**
-- `PluginConfig`: Main configuration object
-- `AgentOverrideConfig`: Per-agent configuration overrides
-- `TmuxConfig`: Tmux integration settings
-- `TmuxLayout`: Layout enum (`main-horizontal`, `main-vertical`, `tiled`, `even-horizontal`, `even-vertical`)
-- `Preset`: Named agent configuration presets
-- `AgentName`: Union type of all agent names
-- `McpName`: Union type of available MCPs (`'websearch'`, `'context7'`, `'grep_app'`)
-- `BackgroundTaskConfig`: Background task concurrency settings
+**TypeScript Types (inferred from Zod schemas)**
+- `AgentOverrideConfig`: Per-agent configuration overrides (model, temperature, variant, skills, mcps)
+- `TmuxConfig`: Tmux integration settings (enabled, layout, main_pane_size)
+- `TmuxLayout`: Union type of layout enum values
+- `Preset`: Record of named agent configurations
+- `AgentName`: Union type of all valid agent names
+- `McpName`: Union type of available MCP identifiers
+- `BackgroundTaskConfig`: Background task concurrency and result limits
+- `PluginConfig`: Main configuration object combining all schemas
+
+**Constants**
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `DEFAULT_MODELS` | Record<AgentName, string> | Default LLM model for each agent |
+| `POLL_INTERVAL_MS` | 500 | Standard task polling interval |
+| `POLL_INTERVAL_SLOW_MS` | 1000 | Slower polling for background tasks |
+| `POLL_INTERVAL_BACKGROUND_MS` | 2000 | Background task polling interval |
+| `DEFAULT_TIMEOUT_MS` | 120000 (2 min) | Default operation timeout |
+| `MAX_POLL_TIME_MS` | 300000 (5 min) | Maximum polling duration |
+| `STABLE_POLLS_THRESHOLD` | 3 | Stable polls required for state settlement |
+| `BACKGROUND_MAX_RESULT_SIZE` | 102400 (100KB) | Max background task result size |
+| `BACKGROUND_RESULT_TRUNCATION_MESSAGE` | string | Truncation warning suffix |
 
 **Exported Functions**
 - `loadPluginConfig(directory: string): PluginConfig` - Load and merge all configs
@@ -87,68 +106,118 @@ TmuxConfig
 
 ## Flow
 
-### Configuration Loading Flow
+### Configuration Definition Flow
+
+```
+schema.ts (Zod Schema Definitions)
+│
+ ├── AgentOverrideConfigSchema
+ │    └── Validates: { model?, temperature?, variant?, skills?, mcps? }
+ │
+ ├── TmuxLayoutSchema
+ │    └── Validates: "main-horizontal" | "main-vertical" | "tiled" | "even-horizontal" | "even-vertical"
+ │
+ ├── TmuxConfigSchema
+ │    └── Validates: { enabled, layout, main_pane_size }
+ │
+ ├── McpNameSchema
+ │    └── Validates: "websearch" | "context7" | "grep_app"
+ │
+ ├── BackgroundTaskConfigSchema
+ │    └── Validates: { maxConcurrentStarts, maxCompletedTasks }
+ │
+ └── PluginConfigSchema
+      └── Aggregates all sub-schemas into root configuration
+           │
+           └── z.infer<> generates TypeScript types
+```
+
+### Constants Reference Flow
+
+```
+constants.ts (Runtime Constants)
+│
+ ├── AGENT_ALIASES
+ │    └── Maps legacy names for backward compatibility
+ │
+ ├── SUBAGENT_NAMES / ORCHESTRATOR_NAME / ALL_AGENT_NAMES
+ │    └── Defines canonical agent hierarchy
+ │
+ ├── AgentName type
+ │    └── Union type for type-safe agent references
+ │
+ ├── DEFAULT_MODELS
+ │    └── Maps each agent to its default LLM model
+ │
+ └── Operational Constants
+      ├── Polling: POLL_INTERVAL_MS, POLL_INTERVAL_SLOW_MS, POLL_INTERVAL_BACKGROUND_MS
+      ├── Timeouts: DEFAULT_TIMEOUT_MS, MAX_POLL_TIME_MS
+      ├── Stability: STABLE_POLLS_THRESHOLD
+      └── Limits: BACKGROUND_MAX_RESULT_SIZE, BACKGROUND_RESULT_TRUNCATION_MESSAGE
+```
+
+### Configuration Loading Flow (loader.ts)
 
 ```
 loadPluginConfig(directory)
 │
-├─→ Load user config from ~/.config/opencode/oh-my-opencode-slim.json
-│   └─→ Validate with PluginConfigSchema
-│       └─→ Return null if invalid/missing
-│
-├─→ Load project config from <directory>/.opencode/oh-my-opencode-slim.json
-│   └─→ Validate with PluginConfigSchema
-│       └─→ Return null if invalid/missing
-│
-├─→ Deep merge configs (project overrides user)
-│   ├─→ Top-level: project replaces user
-│   └─→ Nested (agents, tmux): deep merge
-│
-├─→ Apply environment preset override (OH_MY_OPENCODE_SLIM_PRESET)
-│
-└─→ Resolve and merge preset
-    ├─→ Find preset in config.presets[preset]
-    ├─→ Deep merge preset agents with root agents
-    └─→ Warn if preset not found
+ ├─→ Load user config from ~/.config/opencode/oh-my-opencode-slim.json
+ │   └─→ Validate with PluginConfigSchema
+ │       └─→ Return null if invalid/missing
+ │
+ ├─→ Load project config from <directory>/.opencode/oh-my-opencode-slim.json
+ │   └─→ Validate with PluginConfigSchema
+ │       └─→ Return null if invalid/missing
+ │
+ ├─→ Deep merge configs (project overrides user)
+ │   ├─→ Top-level: project replaces user
+ │   └─→ Nested (agents, tmux): deep merge
+ │
+ ├─→ Apply environment preset override (OH_MY_OPENCODE_SLIM_PRESET)
+ │
+ └─→ Resolve and merge preset
+     ├─→ Find preset in config.presets[preset]
+     ├─→ Deep merge preset agents with root agents
+     └─→ Warn if preset not found
 ```
 
-### Prompt Loading Flow
+### Prompt Loading Flow (loader.ts)
 
 ```
 loadAgentPrompt(agentName)
 │
-├─→ Check ~/.config/opencode/oh-my-opencode-slim/{agentName}.md
-│   └─→ If exists → read as replacement prompt
-│
-└─→ Check ~/.config/opencode/oh-my-opencode-slim/{agentName}_append.md
-    └─→ If exists → read as append prompt
+ ├─→ Check ~/.config/opencode/oh-my-opencode-slim/{agentName}.md
+ │   └─→ If exists → read as replacement prompt
+ │
+ └─→ Check ~/.config/opencode/oh-my-opencode-slim/{agentName}_append.md
+     └─→ If exists → read as append prompt
 ```
 
-### MCP Resolution Flow
+### MCP Resolution Flow (agent-mcps.ts)
 
 ```
 getAgentMcpList(agentName, config)
 │
-├─→ Get agent override config (with alias support)
-│
-├─→ If agent has explicit mcps config
-│   └─→ Return parseList(agent.mcps, availableMcps)
-│
-└─→ Otherwise return DEFAULT_AGENT_MCPS[agentName]
+ ├─→ Get agent override config (with alias support)
+ │
+ ├─→ If agent has explicit mcps config
+ │   └─→ Return parseList(agent.mcps, availableMcps)
+ │
+ └─→ Otherwise return DEFAULT_AGENT_MCPS[agentName]
 ```
 
-### Deep Merge Algorithm
+### Deep Merge Algorithm (loader.ts)
 
 ```
 deepMerge(base, override)
 │
-├─→ If base is undefined → return override
-├─→ If override is undefined → return base
-│
-└─→ For each key in override
-    ├─→ If both values are non-array objects
-    │   └─→ Recursively deepMerge
-    └─→ Otherwise → override replaces base
+ ├─→ If base is undefined → return override
+ ├─→ If override is undefined → return base
+ │
+ └─→ For each key in override
+     ├─→ If both values are non-array objects
+     │   └─→ Recursively deepMerge
+     └─→ Otherwise → override replaces base
 ```
 
 ## Integration
@@ -156,24 +225,24 @@ deepMerge(base, override)
 ### Dependencies
 
 **External Dependencies**
-- `zod`: Runtime schema validation
-- `node:fs`, `node:os`, `node:path`: File system operations
+- `zod`: Runtime schema validation with type inference
 
 **Internal Dependencies**
-- None (this is a leaf module)
+- None (schema.ts and constants.ts are leaf modules; no internal cross-dependencies)
 
 ### Consumers
 
 **Direct Consumers**
-- `src/index.ts` - Main plugin entry point
-- `src/skills/` - Agent skill implementations
-- `src/agent/` - Agent configuration and initialization
+- `src/loader.ts`: Uses schemas and constants for config loading/merging
+- `src/index.ts`: Main plugin entry point
+- `src/skills/`: Agent skill implementations
+- `src/agent/`: Agent configuration and initialization
 
 **Configuration Usage Patterns**
 
-1. **Plugin Initialization**
+1. **Schema Validation**
    ```typescript
-   const config = loadPluginConfig(projectDir);
+   const validated = PluginConfigSchema.parse(rawConfig);
    ```
 
 2. **Agent Configuration**
@@ -206,16 +275,9 @@ deepMerge(base, override)
 **Stability**
 - `STABLE_POLLS_THRESHOLD` (3): Number of stable polls before considering state settled
 
-### Default MCP Assignments
-
-| Agent      | Default MCPs                          |
-|------------|---------------------------------------|
-| orchestrator | `['websearch']`                       |
-| designer    | `[]`                                  |
-| oracle      | `[]`                                  |
-| librarian   | `['websearch', 'context7', 'grep_app']` |
-| explorer    | `[]`                                  |
-| fixer       | `[]`                                  |
+**Result Limits**
+- `BACKGROUND_MAX_RESULT_SIZE` (100KB): Maximum background task result size
+- `BACKGROUND_RESULT_TRUNCATION_MESSAGE`: Message appended to truncated results
 
 ### Default Models
 
@@ -227,6 +289,17 @@ deepMerge(base, override)
 | explorer    | `openai/gpt-5.1-codex-mini`   |
 | designer    | `kimi-for-coding/k2p5`        |
 | fixer       | `openai/gpt-5.1-codex-mini`   |
+
+### Default MCP Assignments
+
+| Agent      | Default MCPs                          |
+|------------|---------------------------------------|
+| orchestrator | `['websearch']`                       |
+| designer    | `[]`                                  |
+| oracle      | `[]`                                  |
+| librarian   | `['websearch', 'context7', 'grep_app']` |
+| explorer    | `[]`                                  |
+| fixer       | `[]`                                  |
 
 ## File Organization
 

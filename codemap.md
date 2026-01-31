@@ -1,208 +1,478 @@
-# Repository Atlas: oh-my-opencode-slim
+# CodeMap: oh-my-opencode-slim
 
-## Project Responsibility
+> Lightweight agent orchestration plugin for OpenCode - a slimmed-down fork of oh-my-opencode
 
-**oh-my-opencode-slim** is a lightweight agent orchestration plugin for OpenCode - a slimmed-down fork of oh-my-opencode. It provides a multi-agent system that enables specialized AI agents to work together under an orchestrator to optimize coding tasks for quality, speed, cost, and reliability.
+---
 
-The plugin integrates with OpenCode to provide:
-- **Multi-agent orchestration** with specialized roles (Orchestrator, Explorer, Librarian, Oracle, Designer, Fixer)
-- **Background task management** for long-running async operations
-- **MCP (Model Context Protocol) integration** for external tools and services
-- **LSP (Language Server Protocol) tools** for code intelligence
-- **Code search capabilities** via grep and AST-grep
-- **Tmux integration** for visual task tracking
-- **Configuration system** with agent overrides and skill management
-- **CLI installer** for interactive setup and configuration
+## 1. Responsibility
 
-## System Entry Points
+**oh-my-opencode-slim** is a multi-agent orchestration plugin for OpenCode that coordinates a team of 6 specialized AI agents ("The Pantheon") to tackle complex software development tasks. The plugin enables:
 
-| File | Purpose | Key Exports |
-|------|---------|-------------|
-| `package.json` | Project manifest, dependencies, and build scripts | `oh-my-opencode-slim` CLI, `dist/index.js` main entry |
-| `src/index.ts` | Main plugin entry point | `OhMyOpenCodeLite` plugin, agent configs, tools, MCPs |
-| `src/cli/index.ts` | CLI installer entry point | `install` command, configuration management |
-| `tsconfig.json` | TypeScript compiler configuration | Build settings, type checking, declaration generation |
+- **Delegation**: Orchestrator agent delegates tasks to appropriate subagents
+- **Background Execution**: Long-running tasks execute asynchronously without blocking the main session
+- **Codebase Navigation**: Specialized agents for exploration, research, and implementation
+- **Tool Integration**: LSP, grep, and AST-based code analysis tools
+- **MCP Integration**: Web search, documentation lookup, and GitHub code search capabilities
 
-### Build Artifacts
+### The Pantheon (6 Agents)
 
-- `dist/index.js` - Main plugin bundle (ESM)
-- `dist/index.d.ts` - TypeScript declarations
-- `dist/cli/index.js` - CLI bundle
-- `dist/cli/index.d.ts` - CLI TypeScript declarations
+| Agent | Role | Responsibility |
+|-------|------|----------------|
+| **Orchestrator** | Master delegator | Strategic coordination, task decomposition, delegating to subagents |
+| **Explorer** | Codebase reconnaissance | File search, code navigation, pattern discovery |
+| **Oracle** | Strategic advisor | Debugging, architectural decisions, "debugger of last resort" |
+| **Librarian** | External knowledge | Web search, documentation retrieval, Context7 lookup |
+| **Designer** | UI/UX specialist | Visual implementation, user interface design |
+| **Fixer** | Implementation specialist | Fast, focused code implementation |
 
-### Published Files
+---
 
-- `dist/` - Built JavaScript and declarations
-- `src/skills/` - Skill definitions (included in npm package)
-- `README.md` - Documentation
-- `LICENSE` - MIT license
+## 2. Design
 
-## Repository Directory Map
+### Architecture Overview
 
-| Directory | Responsibility Summary | Detailed Map |
-|-----------|------------------------|--------------|
-| `src/` | Main plugin entrypoint plus all feature modules that compose agents, tools, hooks, background managers, and utils. | [View Map](src/codemap.md) |
-| `src/agents/` | Defines specialist agents and the orchestrator, with factories and override/permission helpers. | [View Map](src/agents/codemap.md) |
-| `src/background/` | Background task/session managers and tmux pane orchestration for off-thread agent runs. | [View Map](src/background/codemap.md) |
-| `src/cli/` | Installer CLI flow, config edits, provider setup, and skill installation helpers. | [View Map](src/cli/codemap.md) |
-| `src/config/` | Plugin configuration schemas, defaults, loaders, and MCP/agent override helpers. | [View Map](src/config/codemap.md) |
-| `src/hooks/` | Re-exported hook factories and option types for lifecycle hooks. | [View Map](src/hooks/codemap.md) |
-| `src/hooks/auto-update-checker/` | Startup update check hook with cache invalidation and optional auto-install. | [View Map](src/hooks/auto-update-checker/codemap.md) |
-| `src/hooks/phase-reminder/` | Orchestrator message transform hook that injects phase reminders. | [View Map](src/hooks/phase-reminder/codemap.md) |
-| `src/hooks/post-read-nudge/` | Read tool after-hook that appends delegation nudges. | [View Map](src/hooks/post-read-nudge/codemap.md) |
-| `src/mcp/` | Built-in MCP registry and config types for remote connectors. | [View Map](src/mcp/codemap.md) |
-| `src/tools/` | Tool registry plus background task tool implementations. | [View Map](src/tools/codemap.md) |
-| `src/tools/ast-grep/` | AST-grep CLI discovery, execution, and tool definitions. | [View Map](src/tools/ast-grep/codemap.md) |
-| `src/tools/grep/` | Ripgrep/grep runner, downloader, and tool definition. | [View Map](src/tools/grep/codemap.md) |
-| `src/tools/lsp/` | LSP client stack and tool surface for definitions, diagnostics, and rename. | [View Map](src/tools/lsp/codemap.md) |
+```
+oh-my-opencode-slim/
+├── src/
+│   ├── index.ts                    # Main plugin entry point
+│   ├── cli/                        # CLI installer and management
+│   │   ├── index.ts               # CLI entry point
+│   │   ├── install.ts             # Installation logic
+│   │   ├── config-manager.ts      # Configuration management
+│   │   ├── skills.ts              # Skill permissions
+│   │   └── custom-skills.ts       # Custom skill definitions
+│   ├── agents/                     # Agent definitions and factories
+│   │   ├── index.ts               # Agent factory functions
+│   │   ├── orchestrator.ts        # Orchestrator agent (primary)
+│   │   ├── explorer.ts            # Explorer agent
+│   │   ├── oracle.ts              # Oracle agent
+│   │   ├── librarian.ts           # Librarian agent
+│   │   ├── designer.ts            # Designer agent
+│   │   └── fixer.ts               # Fixer agent
+│   ├── tools/                      # Tool implementations
+│   │   ├── index.ts               # Tool exports
+│   │   ├── grep/                  # Ripgrep-based search tool
+│   │   ├── ast-grep/              # AST-based pattern search
+│   │   ├── lsp/                   # Language server protocol tools
+│   │   └── background.ts          # Background task execution tools
+│   ├── mcp/                        # Model Context Protocol servers
+│   │   ├── index.ts               # MCP factory
+│   │   ├── websearch.ts           # Web search MCP
+│   │   ├── context7.ts            # Documentation lookup MCP
+│   │   └── grep-app.ts            # GitHub code search MCP
+│   ├── background/                 # Background task management
+│   │   ├── background-manager.ts  # Task lifecycle, queuing, state machine
+│   │   ├── tmux-session-manager.ts # Tmux pane management
+│   │   └── persistence.ts         # Task state persistence
+│   ├── hooks/                      # Plugin lifecycle hooks
+│   │   ├── auto-update-checker/   # Version checking
+│   │   ├── phase-reminder/        # Workflow compliance reminders
+│   │   └── post-read-nudge/       # Delegation encouragement
+│   ├── config/                     # Configuration management
+│   │   ├── schema.ts              # Zod schemas for config
+│   │   ├── loader.ts              # Config file loading
+│   │   └── agent-mcps.ts          # Agent-MCP mappings
+│   ├── utils/                      # Utilities
+│   │   ├── logger.ts              # Structured logging
+│   │   ├── tmux.ts                # Tmux utilities
+│   │   └── circuit-breaker.ts     # Circuit breaker pattern
+│   └── skills/                     # Bundled skills
+│       └── cartography/           # Repository mapping skill
+└── dist/                           # Compiled output
+```
 
-| `src/utils/` | Shared helpers for variants, tmux, polling, logging, and zip extraction. | [View Map](src/utils/codemap.md) |
+### Key Patterns
 
-## Architecture Overview
+#### Plugin Pattern
+The plugin exports a default async function conforming to `@opencode-ai/plugin` type:
+
+```typescript
+const OhMyOpenCodeLite: Plugin = async (ctx) => {
+  return {
+    name: 'oh-my-opencode-slim',
+    agent: agents,
+    tool: { ...backgroundTools, grep, ast_grep_search, ...lspTools },
+    mcp: mcps,
+    config: (opencodeConfig) => { /* ... */ },
+    event: (input) => { /* ... */ },
+    'experimental.chat.messages.transform': phaseReminderHook[...],
+    'tool.execute.after': postReadNudgeHook[...],
+    'experimental.chat.system.transform': async (input, output) => { /* ... */ },
+  };
+};
+```
+
+#### Agent Factory Pattern
+Agents are created via factory functions (`createOrchestratorAgent`, `createExplorerAgent`, etc.) that return `AgentDefinition` objects containing:
+- `name`: Agent identifier
+- `description`: Human-readable description
+- `config`: SDK agent configuration (model, temperature, permissions)
+- `system`: System prompt (optional override)
+
+#### State Machine Pattern (Background Tasks)
+`BackgroundTaskManager` implements a state machine with valid transitions:
+```
+pending -> starting -> running -> completed | failed | cancelled
+```
+
+Atomic transitions use version checking to prevent race conditions.
+
+#### Resource Registry Pattern
+`TaskResourceRegistry` provides centralized cleanup for:
+- Timers (retry, idle debounce)
+- Promise resolvers (completion waiting)
+- Session mappings
+
+---
+
+## 3. Flow
 
 ### Plugin Initialization Flow
 
 ```
-OpenCode loads plugin
-    ↓
-src/index.ts: OhMyOpenCodeLite(ctx)
-    ↓
-Load plugin config (src/config)
-    ↓
-Initialize agent configs (src/agents)
-    ↓
-Initialize background manager (src/background)
-    ↓
-Initialize MCPs (src/mcp)
-    ↓
-Initialize hooks (src/hooks)
-    ↓
-Register tools (src/tools)
-    ↓
-Return plugin object with:
-    - agent: Agent configurations
-    - tool: Tool implementations
-    - mcp: MCP configurations
-    - config: Config merger
-    - event: Event handlers
-    - hooks: Message transforms
+1. loadPluginConfig(ctx.directory)
+   ├── Read ~/.config/opencode/oh-my-opencode-slim.json
+   ├── Apply defaults for missing values
+   └── Return PluginConfig
+
+2. getAgentConfigs(config)
+   ├── Create agents via createAgents(config)
+   ├── Apply model/temperature overrides
+   ├── Set default permissions (question: allow, skill presets)
+   └── Return SDK-compatible agent config
+
+3. Initialize managers
+   ├── BackgroundTaskManager(ctx, tmuxConfig, config)
+   ├── TmuxSessionManager(ctx, tmuxConfig)
+   └── Hook initialization
+       ├── createAutoUpdateCheckerHook(ctx, options)
+       ├── createPhaseReminderHook()
+       └── createPostReadNudgeHook()
+
+4. Setup graceful shutdown
+   ├── SIGINT/SIGTERM handlers
+   ├── backgroundManager.pause()
+   ├── backgroundManager.drain(timeout)
+   ├── backgroundManager.saveState()
+   └── Cleanup tmux, LSP, sessions
+
+5. Return Plugin interface
+   ├── name: 'oh-my-opencode-slim'
+   ├── agent: Agent definitions
+   ├── tool: grep, ast_grep, LSP, background tools
+   ├── mcp: websearch, context7, grep_app
+   ├── config: Merge configs, set default_agent='orchestrator'
+   ├── event: Handle session.status, session.created
+   └── experimental hooks
 ```
 
-### Key Integrations
+### Background Task Flow
 
-1. **Agent System** (`src/agents/`)
-   - Orchestrator delegates to specialized subagents
-   - Each agent has specific tools, permissions, and temperature settings
-   - MCP tools configured per agent based on role
+```
+1. User calls background_task(agent, prompt, description)
+   └── Validate agent is a subagent (not orchestrator)
 
-2. **Background Tasks** (`src/background/`)
-   - Fire-and-forget task execution
-   - Session lifecycle management
-   - Optional tmux pane integration for visual tracking
+2. launch(opts): BackgroundTask
+   ├── Generate task ID (bg_xxxxxxx)
+   ├── Create task record (status: pending)
+   ├── Add to parent session index
+   └── Enqueue for background start
 
-3. **Configuration** (`src/config/`)
-   - User, project, and preset config layers
-   - Agent overrides and custom prompts
-   - MCP availability and permissions
+3. processQueue()
+   ├── Check concurrency limit (default: 10)
+   ├── If slot available: startTask(task)
+   └── If queue full: wait for active task completion
 
-4. **Tools** (`src/tools/`)
-   - Code search (grep, AST-grep)
-   - LSP integration (diagnostics, references, rename)
-   - Background task orchestration
+4. startTask(task): Phase B (async)
+   ├── Reserve start slot atomically
+   ├── Create session with parentID
+   ├── Transition to 'running' on success
+   ├── Build system prompt with task constraints
+   └── Send prompt to session
 
-5. **MCP Integration** (`src/mcp/`)
-   - Built-in remote MCPs (websearch, context7, grep.app)
-   - Type-safe configuration
-   - Disabled MCP filtering
+5. Session execution
+   ├── Agent processes task independently
+   ├── session.status events emitted
+   └── User can continue main conversation
 
-6. **Hooks** (`src/hooks/`)
-   - Auto-update checking
-   - Phase reminders for workflow compliance
-   - Post-read nudges for delegation
+6. Completion detection
+   ├── session.status: idle -> 500ms debounce
+   ├── Extract last assistant message
+   ├── Truncate if > max size (100KB)
+   └── Transition to 'completed' or 'failed'
 
-## Development Workflow
+7. Notification
+   ├── Format completion notice with task_id
+   ├── Send to parent session (with retry)
+   ├── Mark as pending retrieval
+   └── background_output can retrieve result
 
-```bash
-# Build the project
-bun run build
-
-# Type checking
-bun run typecheck
-
-# Run tests
-bun test
-
-# Linting
-bun run lint
-
-# Format code
-bun run format
-
-# Run all checks (lint + format + organize imports)
-bun run check
-
-# CI mode checks (no auto-fix)
-bun run check:ci
-
-# Build and run with OpenCode
-bun run dev
+8. Eviction
+   ├── Track completed tasks (max: 100)
+   ├── Oldest evicted on limit exceeded
+   ├── Delete associated sessions
+   └── Clear from memory indices
 ```
 
-## Key Dependencies
+### Agent Delegation Flow
 
-| Dependency | Purpose |
-|------------|---------|
-| `@opencode-ai/plugin` | OpenCode plugin SDK |
-| `@opencode-ai/sdk` | OpenCode AI SDK |
-| `@modelcontextprotocol/sdk` | MCP protocol implementation |
-| `@ast-grep/cli` | AST-aware code search |
-| `vscode-jsonrpc` | JSON-RPC protocol |
-| `vscode-languageserver-protocol` | LSP protocol |
-| `zod` | Runtime validation |
+```
+1. User sends message to Orchestrator
+   └── Orchestrator analyzes request
 
-## Extension Points
+2. Orchestrator decomposes task
+   ├── Identifies subtasks requiring subagents
+   ├── Determines best agent for each subtask
+   └── Sends delegation prompt
 
-### Adding New Agents
+3. Subagent execution (Explorer, Librarian, etc.)
+   ├── Receives specific task context
+   ├── Uses allowed tools and MCPs
+   └── Returns result to Orchestrator
 
-1. Create agent definition in `src/agents/`
-2. Add to agent factory registry
-3. Configure default model in `src/config/constants.ts`
-4. Add MCP configuration in `src/config/agent-mcps.ts`
-5. Add skill permissions in `src/cli/skills/`
+4. Orchestrator synthesizes results
+   ├── Combines subagent outputs
+   ├── Resolves any conflicts
+   └── Presents unified response to user
 
-### Adding New Tools
+5. Optional: Background delegation
+   ├── background_task(agent, prompt)
+   └── Runs subagent in isolated session
+```
 
-1. Implement tool in `src/tools/`
-2. Export from `src/tools/index.ts`
-3. Register in main plugin (`src/index.ts`)
-4. Configure agent permissions
+---
 
-### Adding New MCPs
+## 4. Integration
 
-1. Define MCP config in `src/mcp/`
-2. Add to `createBuiltinMcps` registry
-3. Configure agent access in `src/config/agent-mcps.ts`
+### Dependencies
 
-### Adding New Hooks
+| Dependency | Purpose | Version |
+|------------|---------|---------|
+| `@opencode-ai/sdk` | OpenCode plugin SDK types | ^1.1.19 |
+| `@opencode-ai/plugin` | Plugin interface types | ^1.1.19 |
+| `@modelcontextprotocol/sdk` | MCP protocol implementation | ^1.25.1 |
+| `zod` | Runtime validation | ^4.1.8 |
+| `vscode-jsonrpc` | JSON-RPC protocol | ^8.2.0 |
+| `vscode-languageserver-protocol` | LSP protocol types | ^3.17.5 |
+| `@ast-grep/cli` | AST-based search (CLI downloader) | ^0.40.0 |
 
-1. Implement hook in `src/hooks/`
-2. Export factory function from `src/hooks/index.ts`
-3. Register in main plugin (`src/index.ts`)
+### OpenCode Plugin Integration
 
-## Configuration Structure
+The plugin integrates with OpenCode through the `Plugin` interface:
 
+**1. Agent Configuration**
 ```typescript
-interface PluginConfig {
-  agents?: {
-    [agentName: string]: AgentOverrideConfig;
-  };
-  tmux?: TmuxConfig;
-  disabled_mcps?: McpName[];
-  background?: BackgroundTaskConfig;
-  presets?: Record<string, Partial<PluginConfig>>;
+// Set orchestrator as default agent
+(opencodeConfig as { default_agent?: string }).default_agent = 'orchestrator';
+
+// Merge agent configs with permissions
+opencodeConfig.agent = { ...agents };
+```
+
+**2. Tool Registration**
+```typescript
+tool: {
+  // Background task tools
+  background_task: background_taskTool,
+  background_cancel: background_cancelTool,
+  background_output: background_outputTool,
+  background_list: background_listTool,
+
+  // Code search tools
+  grep: grepTool,
+  ast_grep_search: ast_grep_searchTool,
+  ast_grep_replace: ast_grep_replaceTool,
+
+  // LSP tools
+  lsp_goto_definition: lsp_goto_definitionTool,
+  lsp_find_references: lsp_find_referencesTool,
+  lsp_diagnostics: lsp_diagnosticsTool,
+  lsp_rename: lsp_renameTool,
 }
 ```
 
-## License
+**3. MCP Integration**
+```typescript
+mcp: {
+  websearch: { command: 'stdio', args: ['npx', '-y', ...] },
+  context7: { /* Context7 MCP config */ },
+  grep_app: { /* Grep.app MCP config */ },
+}
+```
 
-MIT License - See [LICENSE](LICENSE) for details.
+**4. Event Handling**
+```typescript
+event: async (input) => {
+  // session.created: Spawn tmux pane for Task sessions
+  // session.status: Track background task completion
+  // Handle auto-update checking events
+}
+```
+
+**5. Experimental Hooks**
+```typescript
+// Transform chat messages to inject phase reminders
+'experimental.chat.messages.transform': phaseReminderHook[...],
+
+// Nudge after file reads to encourage delegation
+'tool.execute.after': postReadNudgeHook[...],
+
+// Inject background task status into system prompt
+'experimental.chat.system.transform': async (input, output) => {
+  // Append <BackgroundTasks> section with running/pending tasks
+}
+```
+
+### Configuration File
+
+**Location**: `~/.config/opencode/oh-my-opencode-slim.json`
+
+```typescript
+{
+  // Preset selection
+  preset?: string,
+  presets?: {
+    [presetName]: {
+      agents?: {
+        [agentName]: {
+          model?: string,      // e.g., "openai/gpt-4o"
+          temperature?: number, // 0.0 - 2.0
+          skills?: string[],   // ["cartography", "read"]
+          mcps?: string[],     // ["websearch", "context7"]
+        }
+      }
+    }
+  },
+
+  // Agent overrides (if not using presets)
+  agents?: Record<AgentName, AgentOverrideConfig>,
+
+  // Disabled MCPs
+  disabled_mcps?: string[],
+
+  // Tmux configuration
+  tmux?: {
+    enabled?: boolean,
+    layout?: 'main-vertical' | 'main-horizontal' | 'tiled',
+    main_pane_size?: number, // percentage
+  },
+
+  // Background task configuration
+  background?: {
+    maxConcurrentStarts?: number, // default: 10
+    maxCompletedTasks?: number,   // default: 100
+  }
+}
+```
+
+### MCP Tool Permissions
+
+Each agent has configured MCP permissions via the `config()` function:
+
+| Agent | Allowed MCPs |
+|-------|-------------|
+| Orchestrator | All (delegation hub) |
+| Explorer | grep_app (code search) |
+| Oracle | All (debugging resource) |
+| Librarian | websearch, context7 |
+| Designer | grep_app (UI patterns) |
+| Fixer | grep_app (code search) |
+
+### Tmux Integration
+
+When `tmux.enabled` is true:
+1. `TmuxSessionManager` listens for `session.created` events
+2. Spawns a tmux pane for each session
+3. Displays session output in real-time
+4. Layout configurable (main-vertical, tiled, etc.)
+5. Panes automatically cleaned up on session end
+
+### CLI Commands
+
+```bash
+# Install plugin
+bunx oh-my-opencode-slim install
+
+# Options
+--kimi=yes|no         # Enable Kimi API
+--openai=yes|no       # Enable OpenAI API
+--tmux=yes|no         # Enable tmux integration
+--no-tui              # Non-interactive mode
+```
+
+---
+
+## 5. File Reference
+
+### Critical Files
+
+| File | Purpose |
+|------|---------|
+| `src/index.ts` | Main plugin export and initialization |
+| `src/agents/index.ts` | Agent factory and configuration |
+| `src/background/background-manager.ts` | Background task lifecycle management |
+| `src/config/schema.ts` | Zod validation schemas |
+
+### Tool Implementations
+
+| Module | Tools Provided |
+|--------|---------------|
+| `src/tools/grep/` | `grep` - Text content search (ripgrep-based) |
+| `src/tools/ast-grep/` | `ast_grep_search`, `ast_grep_replace` - AST pattern matching |
+| `src/tools/lsp/` | `lsp_goto_definition`, `lsp_find_references`, `lsp_diagnostics`, `lsp_rename` |
+| `src/tools/background.ts` | `background_task`, `background_output`, `background_cancel`, `background_list` |
+
+### MCP Servers
+
+| MCP | Purpose |
+|-----|---------|
+| `websearch` | Web search via Exa API |
+| `context7` | Technical documentation lookup |
+| `grep_app` | GitHub code search |
+
+---
+
+## 6. Development
+
+### Build Commands
+
+```bash
+bun run build       # Compile TypeScript to dist/ (both index.ts and cli/index.ts)
+bun run typecheck   # TypeScript type checking
+bun run test        # Run all tests
+bun run lint        # Biome linter
+bun run format      # Biome formatter
+bun run check       # Biome check with auto-fix
+bun run dev         # Build and run with OpenCode
+```
+
+### Code Style
+
+- **Formatter**: Biome (configured in `biome.json`)
+- **Line width**: 80 characters
+- **Indentation**: 2 spaces
+- **Quotes**: Single quotes
+- **Trailing commas**: Always enabled
+
+### Testing
+
+Tests are located alongside implementation files with `.test.ts` extension:
+- `src/agents/index.test.ts`
+- `src/background/background-manager.test.ts`
+- `src/tools/grep/grep.test.ts`
+
+Run tests: `bun test`
+
+---
+
+## 7. Skills (Bundled)
+
+### Cartography Skill
+
+**Location**: `src/skills/cartography/`
+
+A custom skill for repository mapping and codemap generation. Includes:
+- `SKILL.md`: Skill definition and usage
+- `scripts/cartographer.py`: Python implementation for codebase analysis
+
+The skill enables agents to generate comprehensive documentation of project structure, dependencies, and architecture.

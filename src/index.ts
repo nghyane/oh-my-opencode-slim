@@ -250,7 +250,9 @@ const OhMyOpenCodeLite: Plugin = async (ctx) => {
         lines.push(`- ${t.id}: ${t.description} (${t.agent}, running)`);
       }
       for (const t of pending) {
-        lines.push(`- ${t.id}: completed, call background_output`);
+        lines.push(
+          `- ${t.id}: completed, wait for notification then call background_output`,
+        );
       }
 
       output.system.push(

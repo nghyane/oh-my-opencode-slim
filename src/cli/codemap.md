@@ -5,7 +5,7 @@
 The `src/cli/` directory provides the command-line interface for installing and configuring **oh-my-opencode-slim**, an OpenCode plugin. It handles:
 
 - **Installation orchestration**: Interactive and non-interactive installation flows
-- **Configuration management**: Reading, parsing, and writing OpenCode configuration files
+- **Configuration management**: Reading, parsing, and writing OpenCode configuration files (JSON/JSONC)
 - **Skill management**: Installing recommended skills (via npx) and custom skills (bundled)
 - **Provider configuration**: Setting up model mappings for different AI providers (Kimi, OpenAI, Zen)
 - **System integration**: Detecting OpenCode installation, validating environment
@@ -35,8 +35,8 @@ The CLI module follows a **layered architecture** with clear separation of conce
 ┌───▼────┐  ┌────▼────┐  ┌────▼──────┐
 │ config │  │ skills  │  │  system   │
 │  -io   │  │         │  │           │
-│ paths  │  │custom   │  │           │
-│providers│ │         │  │           │
+ │paths   │  │custom   │  │           │
+ │providers│ │         │  │           │
 └────────┘  └─────────┘  └────────────┘
 ```
 
@@ -50,7 +50,7 @@ interface OpenCodeConfig {
   plugin?: string[];
   provider?: Record<string, unknown>;
   agent?: Record<string, unknown>;
-  [key: string];
+  [key: string]: unknown;
 }
 ```
 
@@ -69,6 +69,19 @@ interface InstallConfig {
 ```
 
 User preferences collected during installation.
+
+**DetectedConfig** (`types.ts`):
+```typescript
+interface DetectedConfig {
+  isInstalled: boolean;
+  hasKimi: boolean;
+  hasOpenAI: boolean;
+  hasOpencodeZen: boolean;
+  hasTmux: boolean;
+}
+```
+
+Runtime detection of current configuration state and installed providers.
 
 #### 2. **Skill Abstractions**
 
@@ -115,13 +128,15 @@ Standardized result type for configuration operations.
 
 1. **Atomic Write Pattern** (`config-io.ts`):
    - Write to temporary file (`.tmp`)
-   - Rename to target path (atomic operation)
+   - Atomic rename to target path
    - Backup existing file (`.bak`) before writes
+   - Ensures config integrity on failure
 
 2. **JSONC Support** (`config-io.ts`):
-   - Strip comments (single-line `//` and multi-line `/* */`)
-   - Remove trailing commas
-   - Parse as standard JSON
+   - Strip single-line comments (`//`)
+   - Strip multi-line comments (`/* */`)
+   - Remove trailing commas before closing braces/brackets
+   - Fallback from `.json` to `.jsonc` extension
 
 3. **Provider Priority** (`providers.ts`):
    - Kimi > OpenAI > Zen-free (fallback)
@@ -134,12 +149,64 @@ Standardized result type for configuration operations.
 
 ## Flow
 
+### Configuration I/O Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    config-io.ts Module                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  INPUT FUNCTIONS:                                               │
+│  ├─ stripJsonComments(json: string) → string                   │
+│  │    - Regex-based comment stripping                          │
+│  │    - Trailing comma removal                                 │
+│  │                                                              │
+│  ├─ parseConfigFile(path: string) → { config, error? }         │
+│  │    - File existence check                                   │
+│  │    - Empty file handling                                    │
+│  │    - JSONC → JSON transformation                            │
+│  │                                                              │
+│  ├─ parseConfig(path: string) → { config, error? }             │
+│  │    - Tries .json extension                                  │
+│  │    - Falls back to .jsonc                                   │
+│  │                                                              │
+│  ├─ detectCurrentConfig() → DetectedConfig                     │
+│  │    - Parses opencode.json/jsonc                             │
+│  │    - Checks plugin entry                                    │
+│  │    - Detects Kimi provider                                  │
+│  │    - Parses lite config for preset/models                   │
+│  │                                                              │
+│  OUTPUT FUNCTIONS:                                              │
+│  ├─ writeConfig(configPath, config)                            │
+│  │    - Atomic write with .tmp → rename                        │
+│  │    - Creates .bak backup                                    │
+│  │    - JSONC warning on write                                 │
+│  │                                                              │
+│  ├─ addPluginToOpenCodeConfig() → ConfigMergeResult            │
+│  │    - Ensures config directory exists                        │
+│  │    - Parses existing config                                 │
+│  │    - Removes old plugin versions                            │
+│  │    - Adds fresh PACKAGE_NAME entry                          │
+│  │                                                              │
+│  ├─ writeLiteConfig(installConfig) → ConfigMergeResult         │
+│  │    - Generates config via providers.ts                      │
+│  │    - Atomic write pattern                                   │
+│  │                                                              │
+│  └─ disableDefaultAgents() → ConfigMergeResult                 │
+│       - Parses existing config                                 │
+│       - Sets agent.explore.disable = true                      │
+│       - Sets agent.general.disable = true                      │
+│       - Atomic write                                           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ### Installation Flow
 
 ```
 User runs: bunx oh-my-opencode-slim install
-         │
-         ▼
+          │
+          ▼
 ┌─────────────────────────────────────────┐
 │ index.ts: parseArgs()                   │
 │ - Parse CLI arguments                   │
@@ -213,33 +280,12 @@ User runs: bunx oh-my-opencode-slim install
 └─────────────────────────────────────────┘
 ```
 
-### Configuration Detection Flow
-
-```
-detectCurrentConfig() [config-io.ts]
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│ Parse opencode.json/jsonc               │
-│ - Check for plugin entry                │
-│ - Check for kimi provider               │
-└─────────────────┬───────────────────────┘
-                  │
-                  ▼
-┌─────────────────────────────────────────┐
-│ Parse oh-my-opencode-slim.json          │
-│ - Extract preset name                   │
-│ - Check agent models for OpenAI/Zen     │
-│ - Check tmux.enabled flag               │
-└─────────────────────────────────────────┘
-```
-
 ### Model Mapping Flow
 
 ```
 generateLiteConfig() [providers.ts]
-         │
-         ▼
+          │
+          ▼
 ┌─────────────────────────────────────────┐
 │ Determine active preset                 │
 │ - hasKimi → 'kimi'                      │
@@ -277,19 +323,21 @@ generateLiteConfig() [providers.ts]
 
 ```
 index.ts
-  └─> install.ts
-       ├─> config-io.ts
-       │    ├─> paths.ts
-       │    └─> providers.ts
-       ├─> custom-skills.ts
-       ├─> skills.ts
-       └─> system.ts
+   └─> install.ts
+        ├─> config-io.ts
+        │    ├─> paths.ts
+        │    ├─> providers.ts
+        │    └─> types.ts
+        ├─> custom-skills.ts
+        ├─> skills.ts
+        └─> system.ts
 
 config-manager.ts (barrel)
-  ├─> config-io.ts
-  ├─> paths.ts
-  ├─> providers.ts
-  └─> system.ts
+   ├─> config-io.ts
+   ├─> paths.ts
+   ├─> providers.ts
+   ├─> system.ts
+   └─> types.ts
 ```
 
 ### Configuration Files
@@ -298,33 +346,41 @@ config-manager.ts (barrel)
 |------|----------|---------|
 | `opencode.json` | `~/.config/opencode/` | Main OpenCode config |
 | `opencode.jsonc` | `~/.config/opencode/` | Main config with comments |
-| `oh-my-opencode-slim.json` | `~/.config/opencode/` | Plugin-specific config |
-
-### Consumers
-
-1. **End Users**: Via `bunx oh-my-opencode-slim install`
-2. **OpenCode**: Reads generated configs to load plugin and agents
-3. **CI/CD**: Via `--no-tui` flag for automated installations
+| `oh-my-opencode-slim.json` | `~/.config/opencode/` | Plugin-specific lite config |
 
 ### Data Flow Summary
 
 ```
 User Input (CLI args or TUI)
-         │
-         ▼
+          │
+          ▼
 InstallConfig (preferences)
-         │
-         ├─> OpenCodeConfig (main config)
-         │    - Plugin registration
-         │    - Agent disabling
-         │
-         └─> LiteConfig (plugin config)
-              - Preset selection
-              - Model mappings
-              - Skill assignments
-              - MCP configurations
-              - Tmux settings
+          │
+          ├─> OpenCodeConfig (main config)
+          │    - Plugin registration
+          │    - Agent disabling
+          │
+          └─> LiteConfig (plugin config)
+               - Preset selection
+               - Model mappings
+               - Skill assignments
+               - MCP configurations
+               - Tmux settings
 ```
+
+### config-io.ts Module Contracts
+
+**Input Functions (Pure/Idempotent)**:
+- `stripJsonComments(json: string)`: Pure string transformation
+- `parseConfigFile(path: string)`: Reads and parses file, idempotent
+- `parseConfig(path: string)`: Tries extensions, idempotent
+- `detectCurrentConfig()`: Reads current state, no side effects
+
+**Output Functions (Mutating)**:
+- `writeConfig(configPath, config)`: Atomic file write with backup
+- `addPluginToOpenCodeConfig()`: Mutates OpenCode config, creates backup
+- `writeLiteConfig(installConfig)`: Creates lite config file
+- `disableDefaultAgents()`: Mutates agent configuration
 
 ## Key Files Reference
 
@@ -332,7 +388,7 @@ InstallConfig (preferences)
 |------|-------|---------|
 | `index.ts` | 68 | CLI entry point, argument parsing |
 | `install.ts` | 402 | Installation orchestration, TUI |
-| `config-io.ts` | 251 | Config file I/O, JSONC parsing |
+| `config-io.ts` | 251 | Config file I/O, JSONC parsing, atomic writes |
 | `providers.ts` | 110 | Model mappings, config generation |
 | `skills.ts` | 132 | Recommended skills management |
 | `custom-skills.ts` | 99 | Bundled skills management |

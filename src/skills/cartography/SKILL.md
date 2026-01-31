@@ -5,133 +5,140 @@ description: Repository understanding and hierarchical codemap generation
 
 # Cartography Skill
 
-You help users understand and map repositories by creating hierarchical codemaps.
+Map repositories by creating hierarchical codemaps using parallel explorer agents.
 
 ## When to Use
 
 - User asks to understand/map a repository
-- User wants codebase documentation
 - Starting work on an unfamiliar codebase
+- Before complex refactors
+
+## Quick Start
+
+```bash
+# 1. Check if state exists
+ls .slim/cartography.json
+
+# 2. If not exists, initialize
+python3 ~/.config/opencode/skills/cartography/scripts/cartographer.py init \
+  --root ./ --include "src/**/*.ts" --exclude "**/*.test.ts"
+
+# 3. Check changes
+python3 ~/.config/opencode/skills/cartography/scripts/cartographer.py changes --root ./
+
+# 4. After updating codemaps, save state
+python3 ~/.config/opencode/skills/cartography/scripts/cartographer.py update --root ./
+```
 
 ## Workflow
 
-### Step 1: Check for Existing State
+### Step 1: Check State
 
-**First, check if `.slim/cartography.json` exists in the repo root.**
+```bash
+ls .slim/cartography.json 2>/dev/null && echo "exists" || echo "missing"
+```
 
-If it **exists**: Skip to Step 3 (Detect Changes) - no need to re-initialize.
+- **Exists** → Go to Step 3 (Detect Changes)
+- **Missing** → Go to Step 2 (Initialize)
 
-If it **doesn't exist**: Continue to Step 2 (Initialize).
-
-### Step 2: Initialize (Only if no state exists)
-
-1. **Analyze the repository structure** - List files, understand directories
-2. **Infer patterns** for **core code/config files ONLY** to include:
-   - **Include**: `src/**/*.ts`, `package.json`, etc.
-   - **Exclude (MANDATORY)**: Do NOT include tests, documentation, or translations.
-     - Tests: `**/*.test.ts`, `**/*.spec.ts`, `tests/**`, `__tests__/**`
-     - Docs: `docs/**`, `*.md` (except root `README.md` if needed), `LICENSE`
-     - Build/Deps: `node_modules/**`, `dist/**`, `build/**`, `*.min.js`
-   - Respect `.gitignore` automatically
-3. **Run cartographer.py init**:
+### Step 2: Initialize (First Time Only)
 
 ```bash
 python3 ~/.config/opencode/skills/cartography/scripts/cartographer.py init \
   --root ./ \
   --include "src/**/*.ts" \
-  --exclude "**/*.test.ts" --exclude "dist/**" --exclude "node_modules/**"
+  --exclude "**/*.test.ts" --exclude "dist/**"
 ```
 
-This creates:
-- `.slim/cartography.json` - File and folder hashes for change detection
-- Empty `codemap.md` files in all relevant subdirectories
+This creates `.slim/cartography.json` and empty `codemap.md` files.
 
-4. **Delegate to Explorer agents** - Spawn one explorer per folder to read code and fill in its specific `codemap.md` file.
-
-### Step 3: Detect Changes (If state already exists)
-
-1. **Run cartographer.py changes** to see what changed:
+### Step 3: Detect Changes
 
 ```bash
-python3 ~/.config/opencode/skills/cartography/scripts/cartographer.py changes \
-  --root ./
+python3 ~/.config/opencode/skills/cartography/scripts/cartographer.py changes --root ./
 ```
 
-2. **Review the output** - It shows:
-   - Added files
-   - Removed files
-   - Modified files
-   - Affected folders
+Output shows:
+- Added/removed/modified files
+- **Affected folders** (use these for parallel tasks)
 
-3. **Only update affected codemaps** - Spawn one explorer per affected folder to update its `codemap.md`.
-4. **Run update** to save new state:
+### Step 4: Spawn Parallel Explorers
+
+For each affected folder, launch a background task:
+
+```javascript
+// Get affected folders from 'changes' output
+const affectedFolders = ["src/agents", "src/tools", "src/config"];
+
+// Launch all in parallel
+const tasks = affectedFolders.map(folder => 
+  background_task({
+    agent: "explorer",
+    description: `Map ${folder}/`,
+    prompt: `Update codemap for ${folder}/. Read all source files and write a comprehensive codemap.md covering: Responsibility, Design patterns, Data flow, Integration points.`
+  })
+);
+```
+
+### Step 5: Retrieve Results
+
+System sends notification when done:
+```
+✓ Task bg_abc123de completed. Retrieve with: background_output task_id="bg_abc123de"
+```
+
+⚠️ **ONLY call after receiving notification** (throws error if before)
+
+```javascript
+const results = [
+  background_output({ task_id: "bg_abc123de" }),
+  background_output({ task_id: "bg_def456gh" }),
+];
+```
+
+### Step 6: Update State
 
 ```bash
-python3 ~/.config/opencode/skills/cartography/scripts/cartographer.py update \
-  --root ./
+python3 ~/.config/opencode/skills/cartography/scripts/cartographer.py update --root ./
 ```
 
-### Step 4: Finalize Repository Atlas (Root Codemap)
+## Codemap Format
 
-Once all specific directories are mapped, the Orchestrator must create or update the root `codemap.md`. This file serves as the **Master Entry Point** for any agent or human entering the repository.
-
-1.  **Map Root Assets**: Document the root-level files (e.g., `package.json`, `index.ts`, `plugin.json`) and the project's overall purpose.
-2.  **Aggregate Sub-Maps**: Create a "Repository Directory Map" section. For every folder that has a `codemap.md`, extract its **Responsibility** summary and include it in a table or list in the root map.
-3.  **Cross-Reference**: Ensure that the root map contains the absolute or relative paths to the sub-maps so agents can jump directly to the relevant details.
-
-
-## Codemap Content
-
-Explorers are granted write permissions for `codemap.md` files during this workflow. Use precise technical terminology to document the implementation:
-
-- **Responsibility** - Define the specific role of this directory using standard software engineering terms (e.g., "Service Layer", "Data Access Object", "Middleware").
-- **Design Patterns** - Identify and name specific patterns used (e.g., "Observer", "Singleton", "Factory", "Strategy"). Detail the abstractions and interfaces.
-- **Data & Control Flow** - Explicitly trace how data enters and leaves the module. Mention specific function call sequences and state transitions.
-- **Integration Points** - List dependencies and consumer modules. Use technical names for hooks, events, or API endpoints.
-
-Example codemap:
+Each `codemap.md` should have 4 sections:
 
 ```markdown
-# src/agents/
+# src/feature/
 
 ## Responsibility
-Defines agent personalities and manages their configuration lifecycle.
+What this folder does (e.g., "Service Layer for user authentication")
 
 ## Design
-Each agent is a prompt + permission set. Config system uses:
-- Default prompts (orchestrator.ts, explorer.ts, etc.)
-- User overrides from ~/.config/opencode/oh-my-opencode-slim.json
-- Permission wildcards for skill/MCP access control
+Key patterns: Factory, Observer, etc. Key abstractions and interfaces.
 
 ## Flow
-1. Plugin loads → calls getAgentConfigs()
-2. Reads user config preset
-3. Merges defaults with overrides
-4. Applies permission rules (wildcard expansion)
-5. Returns agent configs to OpenCode
+How data enters, transforms, and exits. Function call sequences.
 
 ## Integration
-- Consumed by: Main plugin (src/index.ts)
-- Depends on: Config loader, skills registry
+Dependencies (imports) and consumers (who uses this).
 ```
 
-Example **Root Codemap (Atlas)**:
+## Root Codemap (Atlas)
+
+After sub-folders are mapped, create/update root `codemap.md`:
 
 ```markdown
-# Repository Atlas: oh-my-opencode-slim
+# Repository Atlas: project-name
 
-## Project Responsibility
-A high-performance, low-latency agent orchestration plugin for OpenCode, focusing on specialized sub-agent delegation and background task management.
+## Overview
+One-line description of the project.
 
-## System Entry Points
-- `src/index.ts`: Plugin initialization and OpenCode integration.
-- `package.json`: Dependency manifest and build scripts.
-- `oh-my-opencode-slim.json`: User configuration schema.
+## Entry Points
+- `src/index.ts`: Main entry
+- `package.json`: Dependencies
 
-## Directory Map (Aggregated)
-| Directory | Responsibility Summary | Detailed Map |
-|-----------|------------------------|--------------|
-| `src/agents/` | Defines agent personalities (Orchestrator, Explorer) and manages model routing. | [View Map](src/agents/codemap.md) |
-| `src/features/` | Core logic for tmux integration, background task spawning, and session state. | [View Map](src/features/codemap.md) |
-| `src/config/` | Implements the configuration loading pipeline and environment variable injection. | [View Map](src/config/codemap.md) |
+## Directory Map
+| Directory | Responsibility | Map |
+|-----------|---------------|-----|
+| `src/agents/` | Agent orchestration | [View](src/agents/codemap.md) |
+| `src/tools/` | Tool implementations | [View](src/tools/codemap.md) |
 ```
