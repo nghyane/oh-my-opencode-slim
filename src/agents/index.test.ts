@@ -1,13 +1,7 @@
-import { beforeAll, describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import type { PluginConfig } from '../config';
 import { SUBAGENT_NAMES } from '../config';
-import { preloadAgentPrompts } from '../prompts/index.js';
 import { createAgents, getAgentConfigs, isSubagent } from './index';
-
-// Preload prompts before running any tests
-beforeAll(async () => {
-  await preloadAgentPrompts();
-});
 
 describe('agent alias backward compatibility', () => {
   test("applies 'explore' config to 'explorer' agent", () => {
