@@ -28,6 +28,13 @@ export class LockFreeTaskOperations {
   >();
   private tasks: Map<string, BackgroundTask>;
 
+  /**
+   * Get completion resolvers map (for testing/cleanup purposes).
+   */
+  getCompletionResolvers(): Map<string, Deferred<BackgroundTask | null>> {
+    return this.completionResolvers;
+  }
+
   constructor(tasks: Map<string, BackgroundTask>) {
     this.tasks = tasks;
   }

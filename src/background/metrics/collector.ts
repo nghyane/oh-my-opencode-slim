@@ -162,18 +162,20 @@ export class TaskMetricsCollector {
 
     // Task failed
     this.unsubscribeFns.push(
-      this.eventBus.on('task.failed', (_e: TaskFailedEvent) => {
+      this.eventBus.on('task.failed', (e: TaskFailedEvent) => {
         this.metrics.tasksFailed.inc();
         this.metrics.activeTasks.dec();
         this.recordError();
+        this.taskCreatedTimes.delete(e.taskId);
       }),
     );
 
     // Task cancelled
     this.unsubscribeFns.push(
-      this.eventBus.on('task.cancelled', (_e: TaskCancelledEvent) => {
+      this.eventBus.on('task.cancelled', (e: TaskCancelledEvent) => {
         this.metrics.tasksCancelled.inc();
         this.metrics.activeTasks.dec();
+        this.taskCreatedTimes.delete(e.taskId);
       }),
     );
 

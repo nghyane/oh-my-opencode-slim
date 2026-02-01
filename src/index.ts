@@ -85,9 +85,6 @@ const OhMyOpenCodeLite: Plugin = async (ctx) => {
         log('Warning: Some background tasks did not complete in time');
       }
 
-      // Save task state for recovery
-      await backgroundManager.saveState();
-
       // Cleanup resources
       await tmuxSessionManager.cleanup();
       await lspManager.stopAll();

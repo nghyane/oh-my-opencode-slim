@@ -122,19 +122,8 @@ export class AtomicStateMachine {
       };
     }
 
-    if (currentDef.onExit) {
-      try {
-        await currentDef.onExit(task);
-      } catch (error) {
-        return {
-          success: false,
-          reason: 'EXIT_HOOK_FAILED',
-          error: error as Error,
-          previousState: task.status,
-        };
-      }
-    }
-
+    // CAS claim: update status and version BEFORE onExit hook
+    // This ensures onExit side-effects only occur when CAS succeeds
     if (task.stateVersion !== currentVersion) {
       return {
         success: false,
@@ -146,6 +135,22 @@ export class AtomicStateMachine {
     const previousState = task.status;
     task.status = newStatus as BackgroundTask['status'];
     task.stateVersion = currentVersion + 1;
+
+    if (currentDef.onExit) {
+      try {
+        await currentDef.onExit(task);
+      } catch (error) {
+        // Revert the CAS claim on exit hook failure
+        task.status = previousState;
+        task.stateVersion = currentVersion;
+        return {
+          success: false,
+          reason: 'EXIT_HOOK_FAILED',
+          error: error as Error,
+          previousState: task.status,
+        };
+      }
+    }
 
     if (context?.error) {
       task.error = context.error.message;

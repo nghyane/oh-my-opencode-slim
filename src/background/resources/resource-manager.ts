@@ -101,12 +101,25 @@ export class GuaranteedCleanupManager {
     resource: ManagedResource,
     timeoutMs: number,
   ): Promise<void> {
-    return Promise.race([
-      Promise.resolve(resource.dispose()),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Dispose timeout')), timeoutMs),
-      ),
-    ]) as Promise<void>;
+    let timer: NodeJS.Timeout | undefined;
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Dispose timeout')), timeoutMs);
+    });
+
+    return Promise.race([Promise.resolve(resource.dispose()), timeoutPromise])
+      .then((result) => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
+        return result;
+      })
+      .catch((error) => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
+        throw error;
+      }) as Promise<void>;
   }
 
   getRegisteredResources(taskId: string): ManagedResource[] {

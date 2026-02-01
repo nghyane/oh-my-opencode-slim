@@ -93,6 +93,15 @@ export interface NotificationSentEvent extends TaskEvent {
 }
 
 /**
+ * Notification attempt event
+ */
+export interface NotificationAttemptEvent extends TaskEvent {
+  readonly type: 'notification.attempt';
+  readonly parentSessionId: string;
+  readonly attempt: number;
+}
+
+/**
  * Notification failed event
  */
 export interface NotificationFailedEvent extends TaskEvent {
@@ -113,6 +122,7 @@ export type TaskEvents =
   | TaskCancelledEvent
   | TaskTransitionEvent
   | NotificationSentEvent
+  | NotificationAttemptEvent
   | NotificationFailedEvent;
 
 /**
@@ -180,6 +190,13 @@ export class TaskEventBus {
         }
       }
     }
+  }
+
+  /**
+   * Reset the event bus - clears all handlers
+   */
+  reset(): void {
+    this.handlers.clear();
   }
 }
 

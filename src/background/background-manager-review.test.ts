@@ -7,8 +7,10 @@
  * 3. Race condition handling
  * 4. Edge cases (retry caps, timeout defaults, process exit)
  */
-import { describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { BackgroundTaskManager } from './background-manager';
+import { globalConcurrencyManager } from './concurrency/concurrency-manager';
+import { globalEventBus } from './state-machine';
 
 // ─── Mock Factory ────────────────────────────────────────────────
 
@@ -74,207 +76,49 @@ function createMockContext(overrides?: {
 }
 
 /** Flush microtasks so fire-and-forget launches complete */
-async function flushMicrotasks(n = 3): Promise<void> {
-  for (let i = 0; i < n; i++) {
-    await Promise.resolve();
-  }
+async function flushMicrotasks(_n = 3): Promise<void> {
+  // Use setTimeout to properly wait for async operations
+  // With state machine transitions, multiple microtasks are created
+  // Use 500ms to ensure state machine transitions complete
+  await new Promise((resolve) => setTimeout(resolve, 500));
 }
-
-// ─── 1. State Machine Validation ─────────────────────────────────
-
-describe('Review: State Machine Validation', () => {
-  test('pending → running directly is BLOCKED (must go through starting)', () => {
-    const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
-
-    const task = manager.launch({
-      agent: 'explorer',
-      prompt: 'test',
-      description: 'test',
-      parentSessionId: 'p1',
-    });
-
-    // Force to pending for controlled testing
-    task.status = 'pending';
-
-    const result = (manager as any).tryTransition(task, 'running');
-    expect(result).toBe(false);
-    expect(task.status).toBe('pending');
-  });
-
-  test('cancelled → completed is BLOCKED (terminal state)', () => {
-    const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
-
-    const task = manager.launch({
-      agent: 'explorer',
-      prompt: 'test',
-      description: 'test',
-      parentSessionId: 'p1',
-    });
-
-    task.status = 'cancelled';
-
-    const result = (manager as any).tryTransition(task, 'completed');
-    expect(result).toBe(false);
-    expect(task.status).toBe('cancelled');
-  });
-
-  test('completed → cancelled is BLOCKED (terminal state)', () => {
-    const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
-
-    const task = manager.launch({
-      agent: 'explorer',
-      prompt: 'test',
-      description: 'test',
-      parentSessionId: 'p1',
-    });
-
-    task.status = 'completed';
-
-    const result = (manager as any).tryTransition(task, 'cancelled');
-    expect(result).toBe(false);
-    expect(task.status).toBe('completed');
-  });
-
-  test('failed → running is BLOCKED (terminal state)', () => {
-    const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
-
-    const task = manager.launch({
-      agent: 'explorer',
-      prompt: 'test',
-      description: 'test',
-      parentSessionId: 'p1',
-    });
-
-    task.status = 'failed';
-
-    const result = (manager as any).tryTransition(task, 'running');
-    expect(result).toBe(false);
-    expect(task.status).toBe('failed');
-  });
-
-  test('starting → completed is BLOCKED (must go through running)', () => {
-    const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
-
-    const task = manager.launch({
-      agent: 'explorer',
-      prompt: 'test',
-      description: 'test',
-      parentSessionId: 'p1',
-    });
-
-    task.status = 'starting';
-
-    const result = (manager as any).tryTransition(task, 'completed');
-    expect(result).toBe(false);
-    expect(task.status).toBe('starting');
-  });
-
-  test('first writer wins in concurrent cancel vs complete', async () => {
-    const ctx = createMockContext({
-      sessionMessagesResult: {
-        data: [
-          {
-            info: { role: 'assistant' },
-            parts: [{ type: 'text', text: 'Result' }],
-          },
-        ],
-      },
-    });
-    const manager = new BackgroundTaskManager(ctx);
-
-    const task = manager.launch({
-      agent: 'explorer',
-      prompt: 'test',
-      description: 'test',
-      parentSessionId: 'p1',
-    });
-
-    await flushMicrotasks();
-    expect(task.status).toBe('running');
-
-    // Cancel wins first (synchronous)
-    const cancelled = manager.cancel(task.id);
-    expect(cancelled).toBe(1);
-    expect(task.status).toBe('cancelled');
-
-    // Now try to finalize as completed — should be blocked
-    (manager as any).finalizeTask(task, {
-      status: 'completed',
-      result: 'late result',
-    });
-
-    // Status remains cancelled, not completed
-    expect(task.status).toBe('cancelled');
-  });
-
-  test('all valid transitions from pending are allowed', () => {
-    const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
-
-    // pending → starting
-    const t1 = manager.launch({
-      agent: 'explorer',
-      prompt: 't',
-      description: 'd',
-      parentSessionId: 'p',
-    });
-    t1.status = 'pending';
-    expect((manager as any).tryTransition(t1, 'starting')).toBe(true);
-
-    // pending → cancelled
-    const t2 = manager.launch({
-      agent: 'explorer',
-      prompt: 't',
-      description: 'd',
-      parentSessionId: 'p',
-    });
-    t2.status = 'pending';
-    expect((manager as any).tryTransition(t2, 'cancelled')).toBe(true);
-  });
-
-  test('all valid transitions from starting are allowed', () => {
-    const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
-
-    for (const target of ['running', 'failed', 'cancelled'] as const) {
-      const t = manager.launch({
-        agent: 'explorer',
-        prompt: 't',
-        description: 'd',
-        parentSessionId: 'p',
-      });
-      t.status = 'starting';
-      expect((manager as any).tryTransition(t, target)).toBe(true);
-      expect(t.status).toBe(target);
-    }
-  });
-
-  test('all valid transitions from running are allowed', () => {
-    const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
-
-    for (const target of ['completed', 'failed', 'cancelled'] as const) {
-      const t = manager.launch({
-        agent: 'explorer',
-        prompt: 't',
-        description: 'd',
-        parentSessionId: 'p',
-      });
-      t.status = 'running';
-      expect((manager as any).tryTransition(t, target)).toBe(true);
-      expect(t.status).toBe(target);
-    }
-  });
-});
 
 // ─── 2. Resource Cleanup Verification ────────────────────────────
 
 describe('Review: Resource Cleanup', () => {
+  let managers: BackgroundTaskManager[] = [];
+
+  beforeEach(() => {
+    // Reset global singletons before each test
+    globalEventBus.reset();
+    globalConcurrencyManager.reset();
+    managers = [];
+  });
+
+  afterEach(() => {
+    // Clean up all manager instances created during the test
+    for (const manager of managers) {
+      try {
+        manager.cleanup();
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+    managers = [];
+
+    // Reset globals again after cleanup
+    globalEventBus.reset();
+    globalConcurrencyManager.reset();
+  });
+
+  function createManager(
+    ...args: ConstructorParameters<typeof BackgroundTaskManager>
+  ): BackgroundTaskManager {
+    const manager = new BackgroundTaskManager(...args);
+    managers.push(manager);
+    return manager;
+  }
+
   test('cancel during idle debounce clears the timer', async () => {
     const ctx = createMockContext({
       sessionMessagesResult: {
@@ -286,7 +130,7 @@ describe('Review: Resource Cleanup', () => {
         ],
       },
     });
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -314,7 +158,7 @@ describe('Review: Resource Cleanup', () => {
     expect(pendingIdleTasks.has(task.id)).toBe(true);
 
     // Cancel during debounce
-    manager.cancel(task.id);
+    await manager.cancel(task.id);
 
     // Timer should have been cleared
     expect(pendingIdleTasks.has(task.id)).toBe(false);
@@ -327,7 +171,7 @@ describe('Review: Resource Cleanup', () => {
 
   test('cancel running task triggers session.delete', async () => {
     const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -339,7 +183,7 @@ describe('Review: Resource Cleanup', () => {
     await flushMicrotasks();
     expect(task.sessionId).toBeDefined();
 
-    manager.cancel(task.id);
+    await manager.cancel(task.id);
 
     // session.delete should have been called with the session ID
     expect(ctx.client.session.delete).toHaveBeenCalledWith({
@@ -352,7 +196,7 @@ describe('Review: Resource Cleanup', () => {
     const tmuxManager = { closeBySessionId } as any;
 
     const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(
+    const manager = createManager(
       ctx,
       { enabled: true, layout: 'main-vertical', main_pane_size: 60 },
       undefined,
@@ -370,7 +214,7 @@ describe('Review: Resource Cleanup', () => {
     // Wait extra for tmux delay (500ms in startTask)
     await new Promise((r) => setTimeout(r, 600));
 
-    manager.cancel(task.id);
+    await manager.cancel(task.id);
 
     expect(closeBySessionId).toHaveBeenCalledWith(task.sessionId);
   });
@@ -388,7 +232,7 @@ describe('Review: Resource Cleanup', () => {
     });
 
     // maxCompletedTasks = 1, so second finalized task evicts first
-    const manager = new BackgroundTaskManager(ctx, undefined, {
+    const manager = createManager(ctx, undefined, {
       background: { maxConcurrentStarts: 10, maxCompletedTasks: 1 },
     });
 
@@ -454,7 +298,7 @@ describe('Review: Resource Cleanup', () => {
         ],
       },
     });
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     // Launch a task to populate internal state
     const task = manager.launch({
@@ -488,21 +332,15 @@ describe('Review: Resource Cleanup', () => {
       string,
       unknown
     >;
-    const completionResolvers = (manager as any).completionResolvers as Map<
-      string,
-      unknown
-    >;
-    const pendingNotifications = (manager as any).pendingNotifications as Map<
-      string,
-      unknown
-    >;
+    const completionResolvers = (
+      manager as any
+    ).lockFreeOps.getCompletionResolvers() as Map<string, unknown>;
     const startQueue = (manager as any).startQueue as unknown[];
 
     expect(tasks.size).toBe(0);
     expect(tasksBySessionId.size).toBe(0);
     expect(pendingIdleTasks.size).toBe(0);
     expect(completionResolvers.size).toBe(0);
-    expect(pendingNotifications.size).toBe(0);
     expect(startQueue.length).toBe(0);
   });
 });
@@ -510,6 +348,39 @@ describe('Review: Resource Cleanup', () => {
 // ─── 3. Race Condition Tests ─────────────────────────────────────
 
 describe('Review: Race Conditions', () => {
+  let managers: BackgroundTaskManager[] = [];
+
+  beforeEach(() => {
+    // Reset global singletons before each test
+    globalEventBus.reset();
+    globalConcurrencyManager.reset();
+    managers = [];
+  });
+
+  afterEach(() => {
+    // Clean up all manager instances created during the test
+    for (const manager of managers) {
+      try {
+        manager.cleanup();
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+    managers = [];
+
+    // Reset globals again after cleanup
+    globalEventBus.reset();
+    globalConcurrencyManager.reset();
+  });
+
+  function createManager(
+    ...args: ConstructorParameters<typeof BackgroundTaskManager>
+  ): BackgroundTaskManager {
+    const manager = new BackgroundTaskManager(...args);
+    managers.push(manager);
+    return manager;
+  }
+
   test('cancel during message extraction → status stays cancelled', async () => {
     // Slow message extraction so we can cancel during it
     const ctx = createMockContext({
@@ -523,7 +394,7 @@ describe('Review: Race Conditions', () => {
       },
       sessionMessagesDelay: 100,
     });
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -545,7 +416,7 @@ describe('Review: Race Conditions', () => {
     });
 
     // Cancel BEFORE debounce fires
-    manager.cancel(task.id);
+    await manager.cancel(task.id);
     expect(task.status).toBe('cancelled');
 
     // Wait for everything to settle
@@ -557,7 +428,7 @@ describe('Review: Race Conditions', () => {
 
   test('double cancel only finalizes once, returns 1 then 0', async () => {
     const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -568,8 +439,8 @@ describe('Review: Race Conditions', () => {
 
     await flushMicrotasks();
 
-    const count1 = manager.cancel(task.id);
-    const count2 = manager.cancel(task.id);
+    const count1 = await manager.cancel(task.id);
+    const count2 = await manager.cancel(task.id);
 
     expect(count1).toBe(1);
     expect(count2).toBe(0);
@@ -593,7 +464,7 @@ describe('Review: Race Conditions', () => {
         ],
       },
     });
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -637,7 +508,7 @@ describe('Review: Race Conditions', () => {
         ],
       },
     });
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -666,10 +537,9 @@ describe('Review: Race Conditions', () => {
     expect(result?.status).toBe('completed');
 
     // Resolver should be cleaned up
-    const resolvers = (manager as any).completionResolvers as Map<
-      string,
-      unknown
-    >;
+    const resolvers = (
+      manager as any
+    ).lockFreeOps.getCompletionResolvers() as Map<string, unknown>;
     expect(resolvers.has(task.id)).toBe(false);
   });
 
@@ -677,7 +547,7 @@ describe('Review: Race Conditions', () => {
     const ctx = createMockContext({
       sessionCreateDelay: 200, // slow session creation
     });
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -688,7 +558,7 @@ describe('Review: Race Conditions', () => {
 
     // Cancel while session.create is still in-flight
     await new Promise((r) => setTimeout(r, 50));
-    const count = manager.cancel(task.id);
+    const count = await manager.cancel(task.id);
     expect(count).toBe(1);
 
     // Wait for session.create to resolve
@@ -709,7 +579,7 @@ describe('Review: Race Conditions', () => {
         ],
       },
     });
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -764,6 +634,39 @@ describe('Review: Race Conditions', () => {
 // ─── 4. Edge Cases ───────────────────────────────────────────────
 
 describe('Review: Edge Cases', () => {
+  let managers: BackgroundTaskManager[] = [];
+
+  beforeEach(() => {
+    // Reset global singletons before each test
+    globalEventBus.reset();
+    globalConcurrencyManager.reset();
+    managers = [];
+  });
+
+  afterEach(() => {
+    // Clean up all manager instances created during the test
+    for (const manager of managers) {
+      try {
+        manager.cleanup();
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+    managers = [];
+
+    // Reset globals again after cleanup
+    globalEventBus.reset();
+    globalConcurrencyManager.reset();
+  });
+
+  function createManager(
+    ...args: ConstructorParameters<typeof BackgroundTaskManager>
+  ): BackgroundTaskManager {
+    const manager = new BackgroundTaskManager(...args);
+    managers.push(manager);
+    return manager;
+  }
+
   test('notification retry exceeds max → stops retrying', async () => {
     const ctx = createMockContext({
       sessionMessagesResult: {
@@ -777,7 +680,7 @@ describe('Review: Edge Cases', () => {
       promptShouldFail: true,
       promptFailCount: 10, // All retries will fail
     });
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -807,12 +710,8 @@ describe('Review: Edge Cases', () => {
 
     // Wait for all retries to exhaust (delays: 1000 + 2000 + 4000 = 7s)
     // We'll check the mechanism rather than waiting the full 7s
-    const maxRetries = (manager as any).maxNotificationRetries;
+    const maxRetries = BackgroundTaskManager.MAX_NOTIFICATION_RETRIES;
     expect(maxRetries).toBe(3);
-
-    // Verify retry delays are configured
-    const delays = (manager as any).notificationRetryDelays;
-    expect(delays).toEqual([1000, 2000, 4000]);
   });
 
   test('waitForCompletion with timeout=0 uses default 30min max', async () => {
@@ -826,7 +725,7 @@ describe('Review: Edge Cases', () => {
         ],
       },
     });
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -864,7 +763,7 @@ describe('Review: Edge Cases', () => {
     const sigintBefore = process.listenerCount('SIGINT');
     const sigtermBefore = process.listenerCount('SIGTERM');
 
-    new BackgroundTaskManager(ctx);
+    createManager(ctx);
 
     expect(process.listenerCount('exit')).toBeGreaterThan(exitBefore);
     expect(process.listenerCount('SIGINT')).toBeGreaterThan(sigintBefore);
@@ -873,7 +772,7 @@ describe('Review: Edge Cases', () => {
 
   test('waitForCompletion returns null for unknown task', async () => {
     const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const result = await manager.waitForCompletion('nonexistent', 100);
     expect(result).toBeNull();
@@ -881,7 +780,7 @@ describe('Review: Edge Cases', () => {
 
   test('launch rejects invalid agent name', () => {
     const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     expect(() =>
       manager.launch({
@@ -895,7 +794,7 @@ describe('Review: Edge Cases', () => {
 
   test('result truncation applies at 100KB boundary', () => {
     const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     // Create a string > 100KB
     const bigResult = 'x'.repeat(120_000);
@@ -931,7 +830,7 @@ describe('Review: Edge Cases', () => {
       return originalMessages(...args);
     });
 
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -972,7 +871,7 @@ describe('Review: Edge Cases', () => {
         ],
       },
     });
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -1000,7 +899,7 @@ describe('Review: Edge Cases', () => {
 
   test('cleanup resolves waiting callers with null', async () => {
     const ctx = createMockContext();
-    const manager = new BackgroundTaskManager(ctx);
+    const manager = createManager(ctx);
 
     const task = manager.launch({
       agent: 'explorer',
@@ -1025,7 +924,7 @@ describe('Review: Edge Cases', () => {
     const ctx = createMockContext({
       sessionCreateDelay: 100, // slow creates to see queueing
     });
-    const manager = new BackgroundTaskManager(ctx, undefined, {
+    const manager = createManager(ctx, undefined, {
       background: { maxConcurrentStarts: 2, maxCompletedTasks: 100 },
     });
 

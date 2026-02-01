@@ -136,11 +136,20 @@ Max 10 concurrent.`,
       const description = String(args.description);
       const wait = args.wait === true;
 
+      // Background tasks require an active session to receive notifications
+      const parentSessionId = toolContext.sessionID;
+      if (!parentSessionId) {
+        throw new Error(
+          'Cannot launch background task: no active session. ' +
+            'Please start a conversation first before using background_task.',
+        );
+      }
+
       const task = manager.launch({
         agent,
         prompt,
         description,
-        parentSessionId: toolContext.sessionID,
+        parentSessionId,
       });
 
       if (wait) {

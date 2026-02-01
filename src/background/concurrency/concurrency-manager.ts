@@ -14,6 +14,7 @@ export class ConcurrencyManager {
   private counts = new Map<string, number>();
   private queues = new Map<string, Array<() => void>>();
   private config: ConcurrencyConfig;
+  private compiledPatterns = new Map<string, RegExp>();
 
   constructor(config: Partial<ConcurrencyConfig> = {}) {
     this.config = {
@@ -29,8 +30,9 @@ export class ConcurrencyManager {
   /**
    * Acquire a slot for the given model.
    * Blocks if at capacity until a slot is available.
+   * Times out after timeoutMs (default 5 minutes).
    */
-  async acquire(model: string): Promise<void> {
+  async acquire(model: string, timeoutMs = 300000): Promise<void> {
     const limit = this.getLimit(model);
     const current = this.counts.get(model) ?? 0;
 
@@ -39,11 +41,31 @@ export class ConcurrencyManager {
       return;
     }
 
-    // Wait for slot to become available
-    return new Promise((resolve) => {
+    // Wait for slot to become available with timeout
+    return new Promise((resolve, reject) => {
       const queue = this.queues.get(model) ?? [];
       queue.push(resolve);
       this.queues.set(model, queue);
+
+      // Set timeout to reject the promise if waiting too long
+      const timeout = setTimeout(() => {
+        // Remove this resolve from queue if still waiting
+        const index = queue.indexOf(resolve);
+        if (index > -1) {
+          queue.splice(index, 1);
+        }
+        reject(
+          new Error(`Acquire timeout for model ${model} after ${timeoutMs}ms`),
+        );
+      }, timeoutMs);
+
+      // Clear timeout when resolved through another path
+      const wrappedResolve = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+      const index = queue.length - 1;
+      queue[index] = wrappedResolve;
     });
   }
 
@@ -58,11 +80,20 @@ export class ConcurrencyManager {
       const next = queue.shift();
       if (next) {
         next();
+        // Clean up queue map if empty
+        if (queue.length === 0) {
+          this.queues.delete(model);
+        }
         return; // Slot transferred, don't decrement
       }
     }
-    // Decrement count
-    this.counts.set(model, Math.max(0, (this.counts.get(model) ?? 1) - 1));
+    // Decrement count and clean up if zero
+    const newCount = Math.max(0, (this.counts.get(model) ?? 1) - 1);
+    if (newCount === 0) {
+      this.counts.delete(model);
+    } else {
+      this.counts.set(model, newCount);
+    }
   }
 
   /**
@@ -91,7 +122,11 @@ export class ConcurrencyManager {
     // Check wildcard patterns (e.g., "anthropic/*" matches "anthropic/claude-3")
     for (const [pattern, limit] of Object.entries(this.config.limits)) {
       if (pattern.includes('*')) {
-        const regex = new RegExp(`^${pattern.replace(/\*/g, '.*')}$`);
+        let regex = this.compiledPatterns.get(pattern);
+        if (!regex) {
+          regex = new RegExp(`^${pattern.replace(/\*/g, '.*')}$`);
+          this.compiledPatterns.set(pattern, regex);
+        }
         if (regex.test(model)) {
           return limit;
         }
@@ -121,6 +156,15 @@ export class ConcurrencyManager {
       limit: this.getLimit(model),
       queued: this.getQueueLength(model),
     }));
+  }
+
+  /**
+   * Reset the manager - clears all counts and queues.
+   * Useful for testing to ensure clean state between tests.
+   */
+  reset(): void {
+    this.counts.clear();
+    this.queues.clear();
   }
 }
 

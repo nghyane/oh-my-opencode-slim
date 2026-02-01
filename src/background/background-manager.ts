@@ -29,16 +29,11 @@ import {
 import type { TmuxConfig } from '../config/schema';
 import { applyAgentVariant, resolveAgentVariant } from '../utils';
 import { log } from '../utils/logger';
-import { globalConcurrencyManager } from './concurrency/concurrency-manager.js';
+import { globalConcurrencyManager } from './concurrency/concurrency-manager';
 import { LockFreeTaskOperations } from './concurrency/lock-free-ops';
-// New architecture modules
 import { TaskMetricsCollector } from './metrics/collector';
-import { globalNotificationService } from './notifications/notification-service';
+import { NotificationService } from './notifications/notification-service';
 import { globalResourceManager } from './resources/resource-manager';
-import {
-  SagaOrchestrator,
-  TaskFinalizationSaga,
-} from './sagas/task-finalization-saga';
 import {
   type AtomicStateMachine,
   globalEventBus,
@@ -46,7 +41,7 @@ import {
 } from './state-machine';
 import type { TmuxSessionManager } from './tmux-session-manager';
 
-type OpencodeClient = PluginInput['client'];
+export type OpencodeClient = PluginInput['client'];
 
 // Read-only agents that cannot spawn background tasks
 const READONLY_AGENTS = ['explore', 'librarian'];
@@ -89,12 +84,14 @@ export interface BackgroundTask {
     | 'cancelled';
   stateVersion: number; // Incremented on each state change for atomic operations
   notificationState: NotificationState; // Atomic notification state
+  notificationError?: string; // Error message if notification failed
   result?: string; // Final output from the agent (when completed)
   error?: string; // Error message (when failed)
   isResultTruncated?: boolean; // Whether result was truncated due to size limit
   config: BackgroundTaskConfig; // Task configuration
   parentSessionId: string; // Parent session ID for notifications
   model: string; // Model identifier for concurrency control
+  concurrencyAcquired?: boolean; // Track if concurrency slot was acquired (for safe release)
   startedAt: Date; // Task creation timestamp
   completedAt?: Date; // Task completion/failure timestamp
   prompt: string; // Initial prompt
@@ -125,14 +122,8 @@ function generateTaskId(): string {
 }
 
 export class BackgroundTaskManager {
-  private static readonly VALID_TRANSITIONS: Record<string, readonly string[]> =
-    {
-      pending: ['starting', 'cancelled'],
-      starting: ['running', 'failed', 'cancelled'],
-      running: ['completed', 'failed', 'cancelled'],
-    };
-
   private static readonly MAX_WAIT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+  public static readonly MAX_NOTIFICATION_RETRIES = 3;
 
   // Primary task storage
   private tasks = new Map<string, BackgroundTask>();
@@ -174,11 +165,11 @@ export class BackgroundTaskManager {
   // Finalization lock to prevent concurrent finalization
   private finalizingTasks = new Set<string>();
 
-  // New architecture components
+  // Architecture components
   private lockFreeOps!: LockFreeTaskOperations;
-  private sagaOrchestrator!: SagaOrchestrator;
   private metrics!: TaskMetricsCollector;
   private stateMachine: AtomicStateMachine;
+  private notificationService: NotificationService;
 
   constructor(
     ctx: PluginInput,
@@ -201,13 +192,11 @@ export class BackgroundTaskManager {
     // Use global state machine instance
     this.stateMachine = globalStateMachine;
 
-    // Initialize new architecture components
+    // Initialize architecture components
     this.lockFreeOps = new LockFreeTaskOperations(this.tasks);
-    this.sagaOrchestrator = new SagaOrchestrator();
     this.metrics = new TaskMetricsCollector(globalEventBus);
-
-    // Wire up notification service
-    globalNotificationService.setSendFunction(this.sendNotification.bind(this));
+    this.notificationService = new NotificationService();
+    this.notificationService.setSendFunction(this.sendNotification.bind(this));
 
     // Orphan detection sweep every 60 seconds
     this.orphanedSweepTimer = setInterval(
@@ -230,38 +219,15 @@ export class BackgroundTaskManager {
     message: unknown,
   ): Promise<void> {
     const model = await this.getSessionModel(sessionId);
+    const messageText =
+      typeof message === 'string' ? message : JSON.stringify(message);
     await this.client.session.prompt({
       path: { id: sessionId },
       body: {
         model,
-        parts: [{ type: 'text' as const, text: message as string }],
+        parts: [{ type: 'text' as const, text: messageText }],
       },
     });
-  }
-
-  /**
-   * Try to transition a task to a new status atomically with version check.
-   * @returns true if transition was allowed, false if blocked
-   */
-  private tryTransition(
-    task: BackgroundTask,
-    newStatus: BackgroundTask['status'],
-  ): boolean {
-    const allowed = BackgroundTaskManager.VALID_TRANSITIONS[task.status];
-    if (!allowed?.includes(newStatus)) {
-      log('[background-manager] blocked transition', {
-        taskId: task.id,
-        from: task.status,
-        to: newStatus,
-      });
-      return false;
-    }
-
-    const currentVersion = task.stateVersion;
-    task.status = newStatus;
-    task.stateVersion = currentVersion + 1;
-
-    return true;
   }
 
   /**
@@ -563,12 +529,13 @@ export class BackgroundTaskManager {
    */
   private async startTask(task: BackgroundTask): Promise<void> {
     // Phase 1: Pre-check and reserve slot atomically
-    if (!this.reserveStartSlot(task)) {
+    if (!(await this.reserveStartSlot(task))) {
       return;
     }
 
     // Acquire concurrency slot for the model
     await globalConcurrencyManager.acquire(task.model);
+    task.concurrencyAcquired = true;
 
     let sessionId: string | undefined;
 
@@ -647,29 +614,15 @@ export class BackgroundTaskManager {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       this.finalizeTask(task, { status: 'failed', error: errorMessage });
-    } finally {
-      this.releaseStartSlot(task);
     }
   }
 
-  /**
-   * Reserve a start slot atomically.
-   */
-  private reserveStartSlot(task: BackgroundTask): boolean {
+  private async reserveStartSlot(task: BackgroundTask): Promise<boolean> {
     if (!this.isTaskStartable(task)) {
       return false;
     }
-    if (!this.tryTransition(task, 'starting')) {
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Release a start slot and process queue.
-   */
-  private releaseStartSlot(_task: BackgroundTask): void {
-    // Queue processing is handled by the caller via scheduleQueueProcess
+    const result = await this.stateMachine.transition(task, 'starting');
+    return result.success;
   }
 
   /**
@@ -770,9 +723,12 @@ export class BackgroundTaskManager {
         (m) => m.info?.role === 'assistant',
       );
 
+      // Extract content from LAST assistant message only
+      const lastAssistantMessage =
+        assistantMessages[assistantMessages.length - 1];
       const extractedContent: string[] = [];
-      for (const message of assistantMessages) {
-        for (const part of message.parts ?? []) {
+      if (lastAssistantMessage) {
+        for (const part of lastAssistantMessage.parts ?? []) {
           if (
             (part.type === 'text' || part.type === 'reasoning') &&
             part.text
@@ -932,75 +888,37 @@ export class BackgroundTaskManager {
     this.cleanupOldCompletedTasks();
 
     // Create and run the finalization saga
-    const saga = this.createFinalizationSaga(task, outcome);
-
-    try {
-      const sagaResult = await this.sagaOrchestrator.startFinalization(
-        task.id,
-        saga,
-      );
-
-      if (!sagaResult.success) {
-        log('[background-manager] Saga failed', {
-          taskId: task.id,
-          failedStep: sagaResult.failedStep,
-          error: sagaResult.error,
-        });
+    // Extract result if task has a session
+    if (task.sessionId && outcome.status === 'completed') {
+      try {
+        task.result =
+          (await this.extractLastAssistantMessage(task.sessionId)) || '';
+      } catch {
+        // Ignore extraction errors
       }
-    } catch (error) {
-      log('[background-manager] Saga execution error', {
-        taskId: task.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    }
+
+    // Send notification to parent session
+    if (task.parentSessionId) {
+      try {
+        await this.notificationService.send(task);
+      } catch {
+        // Fail silently - session may be closed
+      }
     }
 
     // Resolve waiters via lock-free operations
     this.lockFreeOps.resolveWaiters(task);
 
-    // Release concurrency slot for the model
-    globalConcurrencyManager.release(task.model);
+    // Release concurrency slot for the model (only if it was actually acquired)
+    if (task.concurrencyAcquired) {
+      globalConcurrencyManager.release(task.model);
+      task.concurrencyAcquired = false;
+    }
 
     log(`[background-manager] task ${outcome.status}: ${task.id}`, {
       description: task.description,
     });
-  }
-
-  /**
-   * Create a finalization saga for a task.
-   */
-  private createFinalizationSaga(
-    task: BackgroundTask,
-    outcome: TaskOutcome,
-  ): TaskFinalizationSaga {
-    const extractResultFn = async (): Promise<string> => {
-      if (task.sessionId) {
-        return (await this.extractLastAssistantMessage(task.sessionId)) || '';
-      }
-      return '';
-    };
-
-    const sendNotificationFn = async (): Promise<void> => {
-      if (!task.parentSessionId) return;
-
-      try {
-        await globalNotificationService.send(task);
-      } catch (error) {
-        // Notification failure is non-critical, just log
-        console.warn(
-          `[BackgroundManager] Notification failed for task ${task.id}:`,
-          error,
-        );
-      }
-    };
-
-    return new TaskFinalizationSaga(
-      task,
-      outcome,
-      globalEventBus,
-      globalResourceManager,
-      extractResultFn,
-      sendNotificationFn,
-    );
   }
 
   /**
@@ -1088,15 +1006,15 @@ ${isReadOnly ? '- You are a READ-ONLY research agent. You CANNOT spawn backgroun
    * @param taskId - Optional task ID to cancel. If omitted, cancels all pending/running tasks.
    * @returns Number of tasks cancelled
    */
-  cancel(taskId?: string): number {
+  async cancel(taskId?: string): Promise<number> {
     if (taskId) {
       const task = this.tasks.get(taskId);
-      return task && this.doCancelSingleTask(task) ? 1 : 0;
+      return task && (await this.doCancelSingleTask(task)) ? 1 : 0;
     }
 
     let count = 0;
     for (const task of this.tasks.values()) {
-      if (this.doCancelSingleTask(task)) count++;
+      if (await this.doCancelSingleTask(task)) count++;
     }
     return count;
   }
@@ -1105,7 +1023,7 @@ ${isReadOnly ? '- You are a READ-ONLY research agent. You CANNOT spawn backgroun
    * Cancel a single task. Extracted to avoid code duplication.
    * @returns true if task was cancelled, false if it wasn't cancellable
    */
-  private doCancelSingleTask(task: BackgroundTask): boolean {
+  private async doCancelSingleTask(task: BackgroundTask): Promise<boolean> {
     // Clean up idle timer if present
     const idleTimer = this.pendingIdleTasks.get(task.id);
     if (idleTimer) {
@@ -1122,7 +1040,8 @@ ${isReadOnly ? '- You are a READ-ONLY research agent. You CANNOT spawn backgroun
     const inStartQueue = task.status === 'pending';
 
     // Try to mark as cancelled FIRST to prevent race with startTask
-    if (!this.tryTransition(task, 'cancelled')) {
+    const cancelResult = await this.stateMachine.transition(task, 'cancelled');
+    if (!cancelResult.success) {
       return false;
     }
 
@@ -1315,6 +1234,13 @@ ${isReadOnly ? '- You are a READ-ONLY research agent. You CANNOT spawn backgroun
    * Clean up all tasks.
    */
   cleanup(): void {
+    // Resolve any waiting callers with null before disposing
+    const resolvers = this.lockFreeOps.getCompletionResolvers();
+    for (const [, deferred] of resolvers) {
+      deferred.resolve(null);
+    }
+    resolvers.clear();
+
     // Clear pending idle debounce timers
     for (const timer of this.pendingIdleTasks.values()) {
       clearTimeout(timer);
@@ -1331,9 +1257,6 @@ ${isReadOnly ? '- You are a READ-ONLY research agent. You CANNOT spawn backgroun
 
     // Dispose lock-free operations
     this.lockFreeOps.dispose();
-
-    // Dispose saga orchestrator
-    this.sagaOrchestrator.dispose();
 
     // Dispose metrics collector
     this.metrics.dispose();
@@ -1440,93 +1363,5 @@ ${isReadOnly ? '- You are a READ-ONLY research agent. You CANNOT spawn backgroun
     }
 
     throw new Error(`Drain timeout after ${timeout}ms`);
-  }
-
-  /**
-   * Save task state to disk for recovery
-   */
-  async saveState(): Promise<void> {
-    const { TaskPersistence } = await import('./persistence');
-    const persistence = new TaskPersistence(process.cwd());
-    await persistence.save(this.tasks);
-    log('[background-manager] Task state saved');
-  }
-
-  /**
-   * Load task state from disk (for recovery after crash)
-   */
-  async loadState(): Promise<void> {
-    const { TaskPersistence } = await import('./persistence');
-    const persistence = new TaskPersistence(process.cwd());
-    const savedTasks = await persistence.load();
-
-    for (const [taskId, taskData] of savedTasks) {
-      const task = taskData as {
-        id: string;
-        sessionId?: string;
-        description: string;
-        agent: string;
-        status: BackgroundTask['status'];
-        stateVersion?: number;
-        notificationState?: NotificationState;
-        result?: string;
-        error?: string;
-        isResultTruncated?: boolean;
-        parentSessionId: string;
-        model?: string;
-        startedAt: string;
-        completedAt?: string;
-        prompt: string;
-        config?: { maxConcurrentStarts: number; maxCompletedTasks: number };
-      };
-
-      if (task.status === 'running' || task.status === 'starting') {
-        // Mark as failed since we can't recover the actual execution
-        log(`[background-manager] Marking recovered task ${taskId} as failed`);
-        task.status = 'failed';
-        task.error = 'Task interrupted by process restart';
-        task.completedAt = new Date().toISOString();
-      }
-
-      // Restore to memory with proper Date conversion
-      const restoredTask: BackgroundTask = {
-        id: task.id,
-        sessionId: task.sessionId,
-        description: task.description,
-        agent: task.agent,
-        status: task.status,
-        stateVersion: task.stateVersion ?? 0,
-        notificationState: task.notificationState ?? 'pending',
-        result: task.result,
-        error: task.error,
-        isResultTruncated: task.isResultTruncated,
-        parentSessionId: task.parentSessionId,
-        model: task.model ?? 'default',
-        startedAt: new Date(task.startedAt),
-        completedAt: task.completedAt ? new Date(task.completedAt) : undefined,
-        prompt: task.prompt,
-        config: task.config ?? {
-          maxConcurrentStarts: this.maxConcurrentStarts,
-          maxCompletedTasks: this.maxCompletedTasks,
-        },
-      };
-
-      this.tasks.set(taskId, restoredTask);
-
-      // Restore secondary indices
-      const parentSet =
-        this.tasksByParentSession.get(restoredTask.parentSessionId) ??
-        new Set();
-      parentSet.add(taskId);
-      this.tasksByParentSession.set(restoredTask.parentSessionId, parentSet);
-
-      if (restoredTask.sessionId) {
-        this.tasksBySessionId.set(restoredTask.sessionId, taskId);
-      }
-    }
-
-    log(
-      `[background-manager] Loaded ${savedTasks.size} tasks from persistence`,
-    );
   }
 }
