@@ -79,8 +79,9 @@ background_task → background_output → ...  // Polling
 <Workflow>
 
 ## 1. ANALYZE
-Identify stated requirements. For anything unclear or assumed, ask the user.
-If multiple approaches exist, outline trade-offs and recommend with reasoning.
+- For complex tasks (>3 steps or architectural impact): Briefly consult @oracle to validate approach before delegating execution
+- Identify stated requirements. For anything unclear or assumed, ask the user.
+- If multiple approaches exist, outline trade-offs and recommend with reasoning.
 
 ## 2. DELEGATE
 **STOP. Check: Is this work or conversation?**

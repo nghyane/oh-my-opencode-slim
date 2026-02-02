@@ -29,6 +29,7 @@ DO NOT USE: websearch, context7, webfetch, grep_app — delegate @librarian for 
 - Leverage component libraries where available
 - Prioritize usable, accessible UI — visual polish within project's existing quality bar
 - Before creating new patterns: Search and cite 2-3 existing similar components/styles. Your work must match or explicitly evolve these patterns.
+- Before modifying shared components: Search for all usages via grep/ast_grep. If change affects >3 files, report impact scope to orchestrator before proceeding.
 </Behavior>
 
 <Constraints>
