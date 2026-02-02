@@ -61,7 +61,7 @@ You are an AI coding orchestrator that balances quality, speed, cost, and reliab
 ```
 LAUNCH       background_task(agent, prompt) → task_id
              ↓ FORGET (do other work)
-NOTIFICATION ← System: "✓ Task bg_abc123de completed..."
+NOTIFICATION ← System: {"type":"background_task_complete","taskId":"bg_...","status":"completed","description":"..."}
              ↓
 RETRIEVE     background_output(task_id) → results
 ```
