@@ -1,95 +1,107 @@
 # Agent Coding Guidelines
 
-This document provides guidelines for AI agents operating in this repository.
+Guidelines for AI agents working in this repository.
 
 ## Project Overview
 
-**oh-my-opencode-slim** - A lightweight agent orchestration plugin for OpenCode, a slimmed-down fork of oh-my-opencode. Built with TypeScript, Bun, and Biome.
+**oh-my-opencode-slim** - Lightweight agent orchestration plugin for OpenCode. Built with TypeScript, Bun, and Biome.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `bun run build` | Build TypeScript to `dist/` (both index.ts and cli/index.ts) |
-| `bun run typecheck` | Run TypeScript type checking without emitting |
-| `bun test` | Run all tests with Bun |
-| `bun run lint` | Run Biome linter on entire codebase |
-| `bun run format` | Format entire codebase with Biome |
-| `bun run check` | Run Biome check with auto-fix (lint + format + organize imports) |
-| `bun run check:ci` | Run Biome check without auto-fix (CI mode) |
+| `bun run build` | Build to `dist/` (index + cli + declarations) |
+| `bun run typecheck` | TypeScript check without emit |
+| `bun test` | Run all tests |
+| `bun test -t "pattern"` | Run single test by name pattern |
+| `bun run lint` | Biome lint |
+| `bun run format` | Biome format with write |
+| `bun run check` | Biome check with auto-fix (lint + format + imports) |
+| `bun run check:ci` | Biome check without auto-fix (CI mode) |
 | `bun run dev` | Build and run with OpenCode |
-
-**Running a single test:** Use Bun's test filtering with the `-t` flag:
-```bash
-bun test -t "test-name-pattern"
-```
 
 ## Code Style
 
-### General Rules
-- **Formatter/Linter:** Biome (configured in `biome.json`)
+### Biome Configuration
 - **Line width:** 80 characters
 - **Indentation:** 2 spaces
 - **Line endings:** LF (Unix)
-- **Quotes:** Single quotes in JavaScript/TypeScript
-- **Trailing commas:** Always enabled
+- **Quotes:** Single
+- **Trailing commas:** Always
 
-### TypeScript Guidelines
-- **Strict mode:** Enabled in `tsconfig.json`
-- **No explicit `any`:** Generates a linter warning (disabled for test files)
-- **Module resolution:** `bundler` strategy
-- **Declarations:** Generate `.d.ts` files in `dist/`
+### TypeScript
+- **Strict mode:** Enabled
+- **Module:** ESM with bundler resolution
+- **No explicit `any`:** Warning (disabled in test files)
+- **Declarations:** Auto-generated to `dist/`
 
 ### Imports
-- Biome auto-organizes imports on save (`organizeImports: "on"`)
-- Let the formatter handle import sorting
-- Use path aliases defined in TypeScript configuration if present
+- Biome auto-organizes imports (`organizeImports: "on"`)
+- Let formatter handle sorting
+- Use path aliases from `tsconfig.json` if available
 
-### Naming Conventions
+### Naming
 - **Variables/functions:** camelCase
 - **Classes/interfaces:** PascalCase
 - **Constants:** SCREAMING_SNAKE_CASE
-- **Files:** kebab-case for most, PascalCase for React components
+- **Files:** kebab-case (PascalCase for React components)
 
 ### Error Handling
 - Use typed errors with descriptive messages
-- Let errors propagate appropriately rather than catching silently
-- Use Zod for runtime validation (already a dependency)
-
-### Git Integration
-- Biome integrates with git (VCS enabled)
-- Commits should pass `bun run check:ci` before pushing
+- Let errors propagate; avoid silent catches
+- Use Zod for runtime validation
 
 ## Project Structure
 
 ```
-oh-my-opencode-slim/
-├── src/              # TypeScript source files
-├── dist/             # Built JavaScript and declarations
-├── node_modules/     # Dependencies
-├── biome.json        # Biome configuration
-├── tsconfig.json     # TypeScript configuration
-└── package.json      # Project manifest and scripts
+src/
+├── index.ts          # Main plugin export
+├── cli/index.ts      # CLI entry point
+├── skills/           # Agent skills (published)
+├── prompts/agents/   # Agent system prompts
+├── background/       # Background task management
+└── config/           # Configuration utilities
+dist/                 # Built output
+docs/                 # Documentation
 ```
 
 ## Key Dependencies
 
-- `@modelcontextprotocol/sdk` - MCP protocol implementation
-- `@opencode-ai/sdk` - OpenCode AI SDK
+- `@modelcontextprotocol/sdk` - MCP protocol
+- `@opencode-ai/sdk` - OpenCode SDK
 - `zod` - Runtime validation
-- `vscode-jsonrpc` / `vscode-languageserver-protocol` - LSP support
+- `vscode-languageserver-protocol` - LSP support
+- `@ast-grep/cli` - AST search/replace
 
 ## Development Workflow
 
-1. Make code changes
-2. Run `bun run check:ci` to verify linting and formatting
-3. Run `bun run typecheck` to verify types
-4. Run `bun test` to verify tests pass
-5. Commit changes
+1. Make changes
+2. `bun run check:ci` - verify lint/format
+3. `bun run typecheck` - verify types
+4. `bun test` - verify tests
+5. Commit
 
-## Common Patterns
+## Git Integration
 
-- This is an OpenCode plugin - most functionality lives in `src/`
-- The CLI entry point is `src/cli/index.ts`
-- The main plugin export is `src/index.ts`
-- Skills are located in `src/skills/` (included in package publish)
+- Biome integrates with git (VCS enabled)
+- Commits must pass `bun run check:ci`
+- Uses `.gitignore` for ignore patterns
+
+## Agent Orchestration
+
+Agent prompts and workflows are defined in `src/prompts/agents/`:
+- `orchestrator.md` - Main workflow (6-phase: Understand→Delegate→Split→Plan→Execute→Verify)
+- `explorer.md` - Codebase search (read-only)
+- `librarian.md` - External docs research (read-only)
+- `oracle.md` - Strategic decisions (read-only)
+- `designer.md` - UI/UX implementation
+- `fixer.md` - Fast code changes
+
+## Core Principles
+
+- **Clarify first:** Ask before guessing
+- **Minimum viable:** Simplest working solution
+- **Reuse existing:** Prefer existing utilities
+- **File limit:** Keep files under 300 LOC
+- **No hardcoded secrets:** Use environment variables
+- **Clean up:** Delete temp files after use
